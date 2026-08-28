@@ -18,10 +18,6 @@ easy-qfnu-skill/
   scripts/qfnu            # unified CLI
   scripts/qfnu_jwc.py     # academic-affairs office client
   scripts/qfnu_jwxt.py    # teaching-system login client
-  scripts/setup_ocr       # create ddddocr venv
-  scripts/run_ocr         # start local Flask OCR
-  ocr/server.py           # ddddocr HTTP service
-  ocr/requirements.txt
   references/jwc.md
   references/jwxt.md
 ```
@@ -35,33 +31,22 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 ```
 
-模型没有识图能力时，才安装本地验证码 OCR：
+模型没有识图能力时，使用独立的 [ddddocr](https://github.com/w1ndys/ddddocr) 服务。把该仓库导入 Vercel 部署，然后设置服务根地址：
 
 ```bash
-python3 easy-qfnu-skill/scripts/setup_ocr
-python3 easy-qfnu-skill/scripts/run_ocr --host 127.0.0.1 --port 5000
+export QFNU_OCR_URL="https://你的-ddddocr-域名.vercel.app"
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>
 ```
 
-`setup_ocr` 在 `easy-qfnu-skill/ocr/.venv` 安装 `ddddocr` 和 `Flask`，不污染系统 Python。有 `uv` 就用 `uv`（更快，适合云虚拟机 / 本地 agent），没有或失败则回退标准库 `venv + pip`。`uv` 不是硬依赖。
+服务接口为 `POST /ocr`，表单或 JSON 字段 `image` 接收验证码图片 Base64；完整调用示例见 ddddocr 仓库首页。
 
-安装 OCR 遇到网络问题时不要自动反复重试：先问用户是继续尝试安装，还是改用肉眼识图——运行 `jwxt captcha` 保存验证码图片并展示给用户，用户把读到的字符发到对话里，再 `jwxt login --captcha "<用户读出的字符>"` 提交登录。
-
-强制选择安装器：
-
-```bash
-python3 easy-qfnu-skill/scripts/setup_ocr --installer uv
-python3 easy-qfnu-skill/scripts/setup_ocr --installer pip
-# 或 QFNU_OCR_INSTALLER=uv|pip|auto
-```
-
-服务默认 `POST http://127.0.0.1:5000/ocr`，表单字段 `image` 为验证码图片 Base64。
+部署 OCR 遇到网络问题时不要自动反复重试：改用 `jwxt captcha` 保存验证码图片并展示给用户，用户把读到的字符发到对话里，再执行 `jwxt login --captcha "<用户读出的字符>"` 提交登录。
 
 Environment:
 
 | 变量 | 说明 |
 |---|---|
-| `QFNU_OCR_URL` | OCR 服务根地址，默认 `http://127.0.0.1:5000` |
-| `QFNU_OCR_INSTALLER` | OCR 安装器：`auto`（默认）/ `uv` / `pip` |
+| `QFNU_OCR_URL` | 独立 ddddocr 服务根地址；未配置时只能使用 `--captcha` |
 | `QFNU_JWXT_USERNAME` | 学号（也可 `--username`） |
 | `QFNU_JWXT_PASSWORD` | 教务密码（也可 `--password`） |
 | `QFNU_JWXT_COOKIE_PATH` | 会话 Cookie JSON 路径，默认 `~/.local/state/easy-qfnu-skill/jwxt-session.json` |
@@ -77,9 +62,9 @@ python3 easy-qfnu-skill/scripts/qfnu jwc get info/1103/7719.htm
 
 python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # 默认：模型识图 / 用户肉眼识图
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 无识图能力时：本地 OCR 服务
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout
 ```
 
-Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`. JWXT needs network access to `zhjw.qfnu.edu.cn`; the local OCR service is only needed when the model cannot read the captcha image itself.
+Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`. JWXT needs network access to `zhjw.qfnu.edu.cn`; the independent ddddocr service is only needed when the model cannot read the captcha image itself.

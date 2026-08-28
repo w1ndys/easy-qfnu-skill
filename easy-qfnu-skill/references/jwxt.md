@@ -11,7 +11,7 @@ Login is 6 sequential steps on **one Cookie jar**:
 
 1. `GET /` — plant session cookies
 2. `GET /verifycode.servlet` — captcha image bytes
-3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`（仅 OCR 路径；识图路径跳过此步，由模型读图）
+3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`（仅配置独立 OCR 服务时调用；识图路径跳过此步，由模型读图）
 4. `POST /Logon.do?method=logon&flag=sess` — empty body → `scode#sxh`
 5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`
 6. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; 200 plus `教学一体化服务平台` or `glyphicon-class`
@@ -28,20 +28,18 @@ Default login path, no OCR install needed:
 2. The agent reads the PNG with model vision.
 3. `python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>` — skips captcha fetch and OCR, reuses the persisted jar, fetches `scode#sxh`, builds `encoded`, submits. Wrong captcha → `ok: false` with a hint to re-run the `captcha` command for a new image.
 
-Install the local OCR (below) only when the model has no vision capability. If the OCR install hits network errors, do not auto-retry: ask the user whether to continue the install or read the captcha by eye — the agent shows the `jwxt captcha` PNG to the user, the user replies the characters in chat, and the agent runs `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
+When the model has no vision capability, deploy the independent [ddddocr](https://github.com/w1ndys/ddddocr) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access hits network errors, do not auto-retry: show the `jwxt captcha` PNG to the user, let the user reply with the characters, and run `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
 
-## OCR（模型没有识图能力时才需要）
+## 独立 OCR（模型没有识图能力时才需要）
 
-Local ddddocr Flask service, not bundled into the CLI process. Install it only when the model cannot read the captcha image itself. If the install hits network errors, do not auto-retry — ask the user whether to continue the install or switch to the user-reads-captcha flow above.
+The ddddocr Flask service lives in its own repository and is not bundled into this skill. Deploy `w1ndys/ddddocr` to Vercel, then set the service root URL before using the automatic login path.
 
 ```bash
-python3 scripts/setup_ocr
-python3 scripts/run_ocr --host 127.0.0.1 --port 5000
+export QFNU_OCR_URL="https://你的-ddddocr-域名.vercel.app"
+python3 scripts/qfnu jwxt login --username <学号> --password <密码>
 ```
 
-`setup_ocr --installer auto` (default, also `QFNU_OCR_INSTALLER`): use `uv` if it is on PATH, otherwise stdlib `venv + pip`. `uv` is optional. Force with `--installer uv` or `--installer pip`. If `auto` chooses `uv` and it fails, the script falls back to pip.
-
-Default `QFNU_OCR_URL` / `--ocr-url`: `http://127.0.0.1:5000`. Contract: `POST /ocr` form field `image` (base64), JSON `{ "code": 200, "data": "abcd", "message": "ok" }`. `code` may be a number or numeric string; accept `200` or `0`.
+`QFNU_OCR_URL` and `--ocr-url` both accept the service root URL; the client appends `/ocr`. Contract: `POST /ocr` form field or JSON field `image` (Base64), response `{ "code": 200, "data": "abcd", "message": "ok" }`. The independent service also exposes `GET /health`.
 
 ## Session
 
@@ -54,7 +52,7 @@ Credentials come from `--username/--password` or `QFNU_JWXT_USERNAME` / `QFNU_JW
 ```bash
 python3 scripts/qfnu jwxt captcha --out <png>             # 默认：模型识图 / 用户肉眼识图
 python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
-python3 scripts/qfnu jwxt login --username <学号> --password <密码>  # 无识图能力时：本地 OCR 服务
+python3 scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout
 ```
