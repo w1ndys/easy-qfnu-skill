@@ -28,11 +28,11 @@ Default login path, no OCR install needed:
 2. The agent reads the PNG with model vision.
 3. `python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>` — skips captcha fetch and OCR, reuses the persisted jar, fetches `scode#sxh`, builds `encoded`, submits. Wrong captcha → `ok: false` with a hint to re-run the `captcha` command for a new image.
 
-When the model has no vision capability, deploy the independent [ddddocr](https://github.com/w1ndys/ddddocr) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access hits network errors, do not auto-retry: show the `jwxt captcha` PNG to the user, let the user reply with the characters, and run `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
+When the model has no vision capability, deploy the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access hits network errors, do not auto-retry: show the `jwxt captcha` PNG to the user, let the user reply with the characters, and run `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
 
 ## 独立 OCR（模型没有识图能力时才需要）
 
-The ddddocr Flask service lives in its own repository and is not bundled into this skill. Deploy `w1ndys/ddddocr` to Vercel, then set the service root URL before using the automatic login path.
+The ddddocr Flask service lives in its own repository and is not bundled into this skill. Deploy `w1ndys/ddddocr-vercel` to Vercel, then set the service root URL before using the automatic login path.
 
 ```bash
 export QFNU_OCR_URL="https://你的-ddddocr-域名.vercel.app"

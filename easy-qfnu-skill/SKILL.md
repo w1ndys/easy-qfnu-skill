@@ -52,7 +52,7 @@ Default JWC channel is `notices` (首页「重要通知」). Full map: `referenc
 - 教务登录/是否在线/我是谁: `jwxt status`. JSON `profile` has name, student_id, college, major, class_name. If `logged_in` is false, `jwxt login` using env vars or user-supplied credentials. Never write the password into the session file, git, or the reply.
 - Captcha policy, in priority order:
   1. 模型识图（默认）：run `jwxt captcha` to save a fresh captcha PNG plus the login session, read the image with model vision, then run `jwxt login --captcha "<识图结果>"`. On a wrong captcha or a low-confidence read, re-run `jwxt captcha` for a new image (at most 3 tries).
-  2. 模型没有识图能力时使用独立 [ddddocr](https://github.com/w1ndys/ddddocr) 服务：把该仓库部署到 Vercel，设置 `QFNU_OCR_URL` 或传入 `--ocr-url`，然后运行不带 `--captcha` 的 `jwxt login`。
+  2. 模型没有识图能力时使用独立 [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) 服务：把该仓库部署到 Vercel，设置 `QFNU_OCR_URL` 或传入 `--ocr-url`，然后运行不带 `--captcha` 的 `jwxt login`。
   3. 独立服务部署或访问遇到网络问题时不要自己反复重试。改用用户肉眼识图：运行 `jwxt captcha` 保存图片并展示给用户，用户把看到的字符发到对话里，agent 执行 `jwxt login --captcha "<用户读出的字符>"` 提交。
   Never invent or guess captcha text. Never print the password.
 - If the user asks for 成绩/课表/图书馆座位, say the session/profile path exists and those queries are probed but not implemented as CLI commands yet. Do not POST 选课/评教/保存个人信息.

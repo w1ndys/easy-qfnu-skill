@@ -31,7 +31,7 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 ```
 
-模型没有识图能力时，使用独立的 [ddddocr](https://github.com/w1ndys/ddddocr) 服务。把该仓库导入 Vercel 部署，然后设置服务根地址：
+模型没有识图能力时，使用独立的 [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) 服务。把该仓库导入 Vercel 部署，然后设置服务根地址：
 
 ```bash
 export QFNU_OCR_URL="https://你的-ddddocr-域名.vercel.app"
