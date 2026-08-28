@@ -11,7 +11,7 @@ Login is 6 sequential steps on **one Cookie jar**:
 
 1. `GET /` — plant session cookies
 2. `GET /verifycode.servlet` — captcha image bytes
-3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`
+3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`（仅 OCR 路径；识图路径跳过此步，由模型读图）
 4. `POST /Logon.do?method=logon&flag=sess` — empty body → `scode#sxh`
 5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`
 6. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; 200 plus `教学一体化服务平台` or `glyphicon-class`
@@ -20,9 +20,19 @@ Password errors stop immediately. Captcha errors restart from step 1, max 3 roun
 
 `encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. Implementation: `encode_credentials` in `scripts/qfnu_jwxt.py`.
 
-## OCR
+### Captcha: model vision first（默认）
 
-Local ddddocr Flask service, not bundled into the CLI process.
+Default login path, no OCR install needed:
+
+1. `python3 scripts/qfnu jwxt captcha --out <png>` — resets the jar, plants session cookies, downloads the captcha image, writes it to `<png>`, and persists the jar with `captcha_pending: true`.
+2. The agent reads the PNG with model vision.
+3. `python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>` — skips captcha fetch and OCR, reuses the persisted jar, fetches `scode#sxh`, builds `encoded`, submits. Wrong captcha → `ok: false` with a hint to re-run the `captcha` command for a new image.
+
+Install the local OCR (below) only when the model has no vision capability. If the OCR install hits network errors, do not auto-retry: ask the user whether to continue the install or read the captcha by eye — the agent shows the `jwxt captcha` PNG to the user, the user replies the characters in chat, and the agent runs `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
+
+## OCR（模型没有识图能力时才需要）
+
+Local ddddocr Flask service, not bundled into the CLI process. Install it only when the model cannot read the captcha image itself. If the install hits network errors, do not auto-retry — ask the user whether to continue the install or switch to the user-reads-captcha flow above.
 
 ```bash
 python3 scripts/setup_ocr
@@ -42,7 +52,9 @@ Credentials come from `--username/--password` or `QFNU_JWXT_USERNAME` / `QFNU_JW
 ## CLI
 
 ```bash
-python3 scripts/qfnu jwxt login --username <学号> --password <密码>
+python3 scripts/qfnu jwxt captcha --out <png>             # 默认：模型识图 / 用户肉眼识图
+python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
+python3 scripts/qfnu jwxt login --username <学号> --password <密码>  # 无识图能力时：本地 OCR 服务
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout
 ```

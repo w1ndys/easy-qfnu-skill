@@ -28,7 +28,14 @@ easy-qfnu-skill/
 
 ## Setup
 
-教务处公告只用 Python 标准库。强智登录需要本地验证码 OCR：
+教务处公告只用 Python 标准库。强智登录默认走模型识图，不需要安装任何东西：
+
+```bash
+python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # 保存验证码图片 + 登录会话
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
+```
+
+模型没有识图能力时，才安装本地验证码 OCR：
 
 ```bash
 python3 easy-qfnu-skill/scripts/setup_ocr
@@ -36,6 +43,8 @@ python3 easy-qfnu-skill/scripts/run_ocr --host 127.0.0.1 --port 5000
 ```
 
 `setup_ocr` 在 `easy-qfnu-skill/ocr/.venv` 安装 `ddddocr` 和 `Flask`，不污染系统 Python。有 `uv` 就用 `uv`（更快，适合云虚拟机 / 本地 agent），没有或失败则回退标准库 `venv + pip`。`uv` 不是硬依赖。
+
+安装 OCR 遇到网络问题时不要自动反复重试：先问用户是继续尝试安装，还是改用肉眼识图——运行 `jwxt captcha` 保存验证码图片并展示给用户，用户把读到的字符发到对话里，再 `jwxt login --captcha "<用户读出的字符>"` 提交登录。
 
 强制选择安装器：
 
@@ -66,9 +75,11 @@ python3 easy-qfnu-skill/scripts/qfnu jwc list --channel notices --limit 10
 python3 easy-qfnu-skill/scripts/qfnu jwc search "选课"
 python3 easy-qfnu-skill/scripts/qfnu jwc get info/1103/7719.htm
 
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>
+python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # 默认：模型识图 / 用户肉眼识图
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 无识图能力时：本地 OCR 服务
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout
 ```
 
-Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`. JWXT needs network access to `zhjw.qfnu.edu.cn` plus the local OCR service.
+Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`. JWXT needs network access to `zhjw.qfnu.edu.cn`; the local OCR service is only needed when the model cannot read the captcha image itself.
