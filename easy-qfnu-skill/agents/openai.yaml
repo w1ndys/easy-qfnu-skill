@@ -1,0 +1,8 @@
+interface:
+  display_name: "Easy QFNU"
+  short_description: "Query QFNU academic-affairs notices and teaching-system session"
+  default_prompt: "Use $easy-qfnu-skill to list the latest 曲阜师范大学教务处 notices."
+  brand_color: "#1F4E79"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,5 @@
+# Local captcha OCR for 强智教务登录.
+# Install with: python3 easy-qfnu-skill/scripts/setup_ocr
+# setup_ocr uses uv when available, otherwise venv + pip. uv is optional.
+flask>=2.3,<4
+ddddocr>=1.4.11

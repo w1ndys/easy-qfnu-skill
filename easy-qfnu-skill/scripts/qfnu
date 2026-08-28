@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Unified CLI for the easy-qfnu-skill."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+
+def usage() -> int:
+    sys.stderr.write(
+        "Usage: qfnu <command> [args]\n"
+        "\n"
+        "Commands:\n"
+        "  jwc list [--channel notices] [--page 1] [--limit 10]\n"
+        "  jwc get <url-or-info-path>\n"
+        "  jwc search <keyword> [--page 1] [--limit 10]\n"
+        "  jwc channels\n"
+        "  jwxt login [--username 学号] [--password 密码]\n"
+        "  jwxt status\n"
+        "  jwxt logout\n"
+        "\n"
+        "Prints JSON. Query commands are read-only; jwxt login only establishes a session.\n"
+    )
+    return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in {"-h", "--help", "help"}:
+        return usage()
+    command = args[0]
+    rest = args[1:]
+    if command == "jwc":
+        from qfnu_jwc import main as jwc_main
+
+        return jwc_main(rest)
+    if command == "jwxt":
+        from qfnu_jwxt import main as jwxt_main
+
+        return jwxt_main(rest)
+    sys.stderr.write(f"unknown command: {command}\n")
+    return usage()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

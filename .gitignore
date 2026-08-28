@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+easy-qfnu-skill/ocr/.venv/
+jwxt-session.json
