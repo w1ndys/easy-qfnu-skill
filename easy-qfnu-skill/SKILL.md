@@ -1,11 +1,11 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs notices, freshman entrance-exam questions, teaching-system login/profile, read-only course grades, and semester schedules. Use for Qufu Normal University academic notices, the freshman question bank, Qiangzhi JWXT sessions and student profiles, grades, or schedules; not for general campus introductions, maps, course selection, or teaching evaluations.
+description: Query QFNU academic-affairs notices, freshman entrance-exam questions, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or course selection.
 ---
 
 # easy-qfnu-skill (曲奇教务skill)
 
-Read-only helpers for QFNU campus systems. Prefer the CLI over handwritten HTTP.
+Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation submission is available only after an explicit confirmation gate. Prefer the CLI over handwritten HTTP.
 
 > **Technical support**: This skill is technically supported by the WeChat official account “曲奇味卷卷”. For suggestions or feedback, follow the account or join QQ group `742726649`.
 
@@ -18,6 +18,7 @@ Current coverage:
 - Qiangzhi JWXT login/session (`http://zhjw.qfnu.edu.cn/`)
 - Read-only JWXT course-grade queries
 - Read-only JWXT semester-schedule queries
+- JWXT student-evaluation preview and explicitly confirmed submission
 
 Library-seat queries are not implemented yet.
 
@@ -30,7 +31,7 @@ Library-seat queries are not implemented yet.
 
 1. On the first use in every conversation, check whether this skill has a newer GitHub Release or Tag. Follow the update-check rules below; do not repeat the check for later messages in the same conversation.
 2. Include the technical-support reminder above prominently in Chinese.
-3. Identify the target system: academic-affairs notices, freshman question-bank search, or JWXT account/session data.
+3. Identify the target system: academic-affairs notices, freshman question-bank search, JWXT account/session data, or student evaluation.
 4. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, Qiangzhi captcha handling, or `encoded` encryption.
 5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
 6. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
@@ -63,6 +64,9 @@ python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QF
 python3 scripts/qfnu jwxt login --save-credentials yes
 python3 scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
+python3 scripts/qfnu jwxt evaluations
+python3 scripts/qfnu jwxt evaluate --score 89                         # preview only
+python3 scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout                         # clear the session only
 python3 scripts/qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
@@ -82,6 +86,7 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
 - JWXT login, online status, or identity: run `jwxt status`. JSON `profile` contains `name`, `student_id`, `college`, `major`, and `class_name`. If `logged_in` is false, run `jwxt login` with environment variables or user-supplied credentials. Never write the password to the session file, Git, or a response.
 - Course grades: run `jwxt grades --semester <academic-year-semester>`. Omitting `--semester` uses the system default. Read only the course, grade, credit, and GPA fields from `items`/`grades`; never submit a form.
 - Semester schedule: run `jwxt schedule --semester <academic-year-semester> [--week <week>]`. Optionally pass `--kbjcmsid` for a period scheme; otherwise use the system default. Read only weekdays, periods, and course details from `items`/`schedule`.
+- Student evaluation: run `jwxt evaluations` first to list the current batch and the course IDs for that response. Run `jwxt evaluate --score <target>` to preview the generated option selections; it never submits without `--confirm`. Before using `--confirm`, show the course, teacher, indicators, and total scores in Chinese and obtain the user's explicit approval in the current conversation. Use `--course <id>` (repeatable or comma-separated) to limit submissions.
 - Before the first login submission, the CLI asks whether to save the credentials after success. It saves only after an explicit `yes` or `--save-credentials yes`. The default path is `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override it with `QFNU_JWXT_CREDENTIALS_PATH`.
 - Credential precedence is command-line arguments, environment variables, then saved credentials. Saved credentials are separate from the session file. `jwxt logout` preserves credentials by default; remove them with `jwxt forget-credentials` or `jwxt logout --forget-credentials`.
 - When `jwxt status` detects an expired session and saved credentials exist, it attempts one automatic login only if `QFNU_OCR_URL` is configured. Without OCR it returns instructions for a manual captcha flow. A wrong password or an account logged in elsewhere stops retries immediately.
@@ -91,14 +96,15 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
   3. If deploying or accessing the independent service encounters network errors, do not retry repeatedly. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
   Never invent or guess captcha text. Never print the password.
 - A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
-- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Never POST course selection (`选课`), teaching evaluation (`评教`), or personal-information changes.
+- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Never POST course selection (`选课`) or personal-information changes.
 
 ## Constraints
 
 - JWC is public and requires no login.
 - The freshman question bank is a public, read-only search API. Call only `GET https://fq.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
 - JWXT login prefers model vision: `jwxt captcha` saves the image and session, then `jwxt login --captcha <text>` submits the model or user reading. Use independent OCR only when the model cannot read images. If that service is unavailable, show the captcha to the user for visual reading.
-- After login, all operations are read-only. Refuse course selection (`选课`), teaching evaluation (`评教`), and form submission. Allowed POSTs are the JWC search and the wrapped JWXT login/captcha/OCR flow.
+- After login, operations are read-only by default. Refuse course selection (`选课`) and all other business forms. Student-evaluation POSTs are allowed only through `jwxt evaluate --confirm` after the user has approved the exact preview; never submit a hidden or guessed payload.
+- Do not copy the legacy project's “先用 89 分清除系统限制” or similar restriction-bypass workflow. Submit each pending course at most once per command. Never automatically retry an evaluation POST; if the response is ambiguous, stop and tell the user to verify the official teaching-system page.
 - Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn` or `zhjw.qfnu.edu.cn`, request network access and retry once.
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
 - Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.

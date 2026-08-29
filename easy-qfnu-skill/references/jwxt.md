@@ -4,7 +4,7 @@ Base: `http://zhjw.qfnu.edu.cn/`
 
 Product: Qiangzhi (`强智`) `jsxsd`
 
-Current read-only coverage: login, session, student profile, course grades, and semester schedule. Do not reconstruct the captcha or encryption flow in the agent; call `scripts/qfnu jwxt`.
+Current coverage: login, session, student profile, course grades, semester schedule, and explicitly confirmed student evaluations. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/qfnu jwxt`.
 
 ## Authentication
 
@@ -61,6 +61,9 @@ python3 scripts/qfnu jwxt login --username <student-id> --password <password>  #
 python3 scripts/qfnu jwxt login --save-credentials yes
 python3 scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
+python3 scripts/qfnu jwxt evaluations
+python3 scripts/qfnu jwxt evaluate --score 89                         # preview only
+python3 scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout                         # clear the session; preserve credentials
 python3 scripts/qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
@@ -81,6 +84,21 @@ JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `e
 | `photo_url` | `/jsxsd/grxx/xszpLoad`, when a photo exists |
 
 Do not fetch the photo binary unless the user asks. Session JSON may cache `name`, `student_id`, `college`, `major`, and `class_name`, but never the password.
+
+## Student evaluation
+
+The evaluation flow follows the confirmed Qiangzhi endpoints from the legacy `easy-qfnu-xspj` project, adapted to the current shared Cookie session:
+
+| Purpose | URL | Method |
+|---|---|---|
+| Find active evaluation batch (`学生评价`) | `/jsxsd/xspj/xspj_find.do` | GET |
+| List course/teacher entries | `/jsxsd/xspj/xspj_list.do?...` | GET, then POST for later pages |
+| Read one evaluation form | `/jsxsd/xspj/xspj_edit.do?...` | GET |
+| Submit selected indicators | `/jsxsd/xspj/xspj_save.do` | POST, only with `--confirm` |
+
+Run `jwxt evaluations` before `jwxt evaluate`. The latter fetches each pending course, parses hidden form parameters and radio options, and returns a JSON preview with the course ID from that response, course, teacher, indicator selections, and total score. It performs no POST unless `--confirm` is present. The default target is 89; pass `--score` for another target from 0 to 100. Pass `--course` repeatedly or with comma-separated IDs from the list output.
+
+The agent must display the preview in Chinese and obtain explicit approval in the current conversation before adding `--confirm`. The CLI skips entries already marked `已评` or `已提交`. A target of 100 may trigger the system's option restriction; 98 or lower is recommended. It submits each course at most once and stops after the first ambiguous or failed POST so the user can verify the official page. It does not submit free-text comments and does not use the legacy project's “先用 89 分清除系统限制” restriction-bypass behavior.
 
 ## Profile pages
 
@@ -150,8 +168,8 @@ Useful read-only `data-url` values, all prefixed with `/jsxsd`:
 | Program plan and completion (`培养方案及完成情况`) | `/pyfa/topyfamx` |
 | Academic calendar (`教学周历查看`) | `/jxzl/jxzl_query` |
 
-Never submit write or application workflows exposed by the menu: teaching evaluation (`学生评价`, `/xspj/xspj_find.do`), deferred-exam requests, make-up exam registration, course selection (`/xsxk/xklc_list`), preselection, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`).
+Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` flow: deferred-exam requests, make-up exam registration, course selection (`/xsxk/xklc_list`), preselection, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`).
 
 ## Out of scope
 
-Course selection, teaching evaluation, personal-information saves, and every other business-form submission are prohibited. Grade and schedule queries are read-only CLI operations. Library-seat queries are not implemented yet.
+Course selection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.

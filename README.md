@@ -1,6 +1,6 @@
 # easy-qfnu-skill (曲奇教务skill)
 
-A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently.
+A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission is supported only after an explicit confirmation gate.
 
 The skill instructions are written primarily in English, but every user-facing conversation produced while the skill is active must be in Chinese. Commands, URLs, JSON fields, and source-system text remain unchanged where translation would reduce correctness.
 
@@ -10,9 +10,10 @@ Current coverage:
 - Login, session, and profile for the [Qiangzhi teaching system](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
 - Read-only course-grade queries from the Qiangzhi teaching system
 - Read-only semester-schedule queries from the Qiangzhi teaching system
+- Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) API
 
-Library-seat queries are planned. The CLI is query-only and never performs course selection (`选课`) or teaching evaluation (`评教`).
+Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; it never performs course selection (`选课`).
 
 ## Skill layout
 
@@ -23,6 +24,7 @@ easy-qfnu-skill/
   scripts/qfnu            # unified CLI
   scripts/qfnu_jwc.py     # academic-affairs office client
   scripts/qfnu_jwxt.py    # teaching-system login client
+  scripts/qfnu_xspj.py     # student-evaluation client
   scripts/qfnu_freshman.py # freshman question-bank client
   scripts/freshman_question_service.py # question-bank business logic
   scripts/freshman_question_repository.py # question-bank API client
@@ -81,6 +83,9 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --passwo
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in and profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 easy-qfnu-skill/scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
+python3 easy-qfnu-skill/scripts/qfnu jwxt evaluations
+python3 easy-qfnu-skill/scripts/qfnu jwxt evaluate --score 89                         # preview only
+python3 easy-qfnu-skill/scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # use arguments, environment, or saved credentials
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # clear the session; preserve credentials
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # clear session and credentials
@@ -90,6 +95,8 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # clear saved cred
 When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.
 
 A captcha error means only that the current reading does not match. Run `jwxt captcha` again for a new image and session, then submit `jwxt login --captcha`; allow at most 3 consecutive attempts. Do not treat one captcha error as a password error.
+
+`jwxt evaluations` lists the current evaluation batch. `jwxt evaluate --score <target>` builds a preview for every pending course and performs no POST by default. After reviewing course names, teachers, indicators, and totals with the user, rerun the same command with `--confirm` to submit. Use `--course <id>` to limit the batch. A target of 100 may trigger the system's option restriction; 98 or lower is recommended. The command never uses the legacy restriction-bypass flow and never retries an ambiguous submission.
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
