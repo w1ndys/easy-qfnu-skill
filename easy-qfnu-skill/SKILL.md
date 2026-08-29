@@ -9,6 +9,8 @@ Read-only helpers for QFNU campus systems. Prefer the CLI over handwritten HTTP.
 
 > **技术支持提醒**：本 skill 由微信公众号「曲奇味卷卷」提供技术支持。如有建议或反馈，欢迎关注公众号，或加入 QQ 群 `742726649` 进行反馈。
 
+> **开发状态提醒**：本 skill 目前正处于快速迭代开发过程中，功能、命令和支持范围可能持续调整；使用时请留意版本更新提示。
+
 Current coverage:
 
 - Public academic-affairs office site (`https://jwc.qfnu.edu.cn/`)
@@ -30,11 +32,12 @@ Current coverage:
 
 ## Update check
 
-- First run `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` to read the latest published Release.
-- If the repository has no Release, run `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` and use the latest Tag instead.
-- Compare the latest Release/Tag with the local Git tag or commit when repository metadata is available. Only tell the user when an update exists; ask before pulling, installing, or replacing files.
-- If no Release or Tag exists, treat the repository as having no published version and continue the user's task.
-- If GitHub is unavailable, mention once that the update check could not be completed, then continue the user's task. Never block the requested campus query on this check.
+- 首选 `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` 读取最新 Release；该命令需要 GitHub API，遇到 `rate limit exceeded` 时不要循环重试。
+- API 限流或 `gh` 不可用时，改用 Git 协议读取标签：`git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`。按版本号从高到低取最新 Tag，再与本地 Git Tag 比较；这个请求不占用 GitHub REST API 配额。
+- 没有任何 Tag 时，可用 `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` 获取远端 main 的提交 SHA，并在本地存在 Git 元数据时与当前提交比较。SHA 不同只表示远端有新提交，不代表存在正式 Release。
+- 只有在上述 Git 协议也不可用时，才尝试 `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` 或访问 GitHub 网页；网页抓取仅作临时兜底，不要依赖不稳定的 HTML 结构。
+- 比较到新 Release/Tag 或远端提交后，只告知用户有更新；拉取、安装或替换文件前先征得用户同意。
+- 如果既没有 Release/Tag，也无法访问远端，说明本次更新检查未完成，然后继续处理用户请求，不要阻塞教务查询。
 
 ## Commands
 
