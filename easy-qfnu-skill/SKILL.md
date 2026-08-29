@@ -3,7 +3,7 @@ name: easy-qfnu-skill
 description: Query QFNU academic-affairs office notices, freshman entrance-exam questions, and teaching-system login/profile. Use for 曲阜师范大学教务处公告/通知/新闻检索、新生入学考试题库搜索，以及强智教务登录状态与学生信息（姓名/学号/院系/专业/班级）；not for generic campus intro, maps, 选课, or 评教.
 ---
 
-# easy-qfnu-skill
+# 曲奇教务skill（easy-qfnu-skill）
 
 Read-only helpers for QFNU campus systems. Prefer the CLI over handwritten HTTP.
 

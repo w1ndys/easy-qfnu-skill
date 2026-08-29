@@ -1,4 +1,4 @@
-# easy-qfnu-skill
+# 曲奇教务skill（easy-qfnu-skill）
 
 QFNU campus-system skill for AI agents.
 
