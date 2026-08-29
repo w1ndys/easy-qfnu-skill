@@ -7,9 +7,10 @@ Current coverage:
 - Public notices on [曲阜师范大学教务处](https://jwc.qfnu.edu.cn/)
 - Login/session/profile for [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
 - Read-only course-grade queries from [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
+- Read-only semester timetable queries from [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
 - 新生入学考试题库搜索（调用 [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) 公开 API）
 
-Schedule and library seats are planned. The CLI is query-only; it will not 选课 or 评教.
+Library seats are planned. The CLI is query-only; it will not 选课 or 评教.
 
 ## Skill layout
 
@@ -77,6 +78,7 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt grades --semester 2025-2026-3
+python3 easy-qfnu-skill/scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # 使用参数或环境变量/已保存凭据登录
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # 只清除会话，默认保留凭据
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # 同时清除会话和凭据
@@ -86,5 +88,7 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # 只清除已保�
 `jwxt status` 发现会话过期时，会在存在已保存凭据且配置 `QFNU_OCR_URL` 的情况下自动重登一次。未配置 OCR 时会返回手动验证码提示；密码错误或账号被顶下线会立即停止，不会循环重试。
 
 验证码错误只表示本次识别结果不匹配：重新运行 `jwxt captcha` 获取新图片和会话，再提交 `jwxt login --captcha`，最多连续尝试 3 次。不要把单次验证码错误误判为密码错误。
+
+`jwxt schedule` 返回 `items`/`schedule` 课表格，包含星期、节次、课程名称和单元格详情；空课表格不会输出。可用 `--week` 查询单周，省略时查询全部周次。
 
 Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`; JWXT needs network access to `zhjw.qfnu.edu.cn`; freshman search needs network access to `fq.easy-qfnu.top`. The independent ddddocr service is only needed when the model cannot read the captcha image itself.

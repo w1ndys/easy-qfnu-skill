@@ -13,8 +13,9 @@ Current coverage:
 - 新生入学考试题库 (`https://fq.easy-qfnu.top/`)
 - 强智教务 login/session (`http://zhjw.qfnu.edu.cn/`)
 - 强智教务课程成绩查询（只读）
+- 强智教务学期课表查询（只读）
 
-课表、图书馆座位 are not implemented yet.
+图书馆座位 are not implemented yet.
 
 ## Workflow
 
@@ -50,6 +51,7 @@ python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QF
 python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 scripts/qfnu jwxt login --save-credentials yes
 python3 scripts/qfnu jwxt grades --semester 2025-2026-3
+python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout                         # 默认只清除会话
 python3 scripts/qfnu jwxt logout --forget-credentials   # 明确同时清除凭据
@@ -69,6 +71,7 @@ Freshman question-bank API details: `references/freshman.md`.
 - If a list item has `unpublished: true`, it is a `content.jsp` draft. Tell the user the title/date and that the body is not publicly readable; do not retry with a guessed `info/...htm` URL.
 - 教务登录/是否在线/我是谁: `jwxt status`. JSON `profile` has name, student_id, college, major, class_name. If `logged_in` is false, `jwxt login` using env vars or user-supplied credentials. Never write the password into the session file, git, or the reply.
 - 课程成绩：运行 `jwxt grades --semester <学年学期>`；省略 `--semester` 时使用教务系统默认结果。只读解析 `items`/`grades` 中的课程、成绩、学分和绩点字段，不提交任何表单。
+- 课程课表：运行 `jwxt schedule --semester <学年学期> [--week <周次>]`；可选 `--kbjcmsid` 指定节次模式，省略时交给教务系统默认值。只读解析 `items`/`schedule` 中的星期、节次和课程详情。
 - 首次登录时（提交前）会询问是否在成功后保存账号密码；只有输入 `yes` 或显式传入 `--save-credentials yes` 才保存。凭据默认在 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`，可用 `QFNU_JWXT_CREDENTIALS_PATH` 覆盖。
 - 登录凭据优先级为命令行参数、环境变量、已保存凭据。保存凭据不会改变会话文件，`jwxt logout` 默认保留凭据；需要删除时使用 `jwxt forget-credentials` 或 `jwxt logout --forget-credentials`。
 - `jwxt status` 发现会话过期且存在保存凭据时，只有配置 `QFNU_OCR_URL` 才会自动重登一次；未配置 OCR 会返回手动验证码流程提示。密码错误或账号被顶下线会停止重试。

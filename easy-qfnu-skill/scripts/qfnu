@@ -24,6 +24,7 @@ def usage() -> int:
         "  jwxt captcha [--out 图片路径]\n"
         "  jwxt login [--username 学号] [--password 密码] [--captcha 识图结果] [--save-credentials yes|no]\n"
         "  jwxt grades [--semester 学年学期]\n"
+        "  jwxt schedule [--semester 学年学期] [--week 周次] [--kbjcmsid 节次模式]\n"
         "  jwxt status\n"
         "  jwxt logout [--forget-credentials]\n"
         "  jwxt forget-credentials\n"
