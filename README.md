@@ -22,6 +22,7 @@ easy-qfnu-skill/
   scripts/qfnu_freshman.py # freshman question-bank client
   scripts/freshman_question_service.py # question-bank business logic
   scripts/freshman_question_repository.py # question-bank API client
+  scripts/jwxt_credentials_repository.py # saved teaching-system credentials
   scripts/qfnu_types.py   # shared entities and payload types
   references/jwc.md
   references/jwxt.md
@@ -35,6 +36,8 @@ easy-qfnu-skill/
 python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # 保存验证码图片 + 登录会话
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 ```
+
+首次登录时（提交前），命令行会询问是否在成功后保存账号密码；只有输入 `yes` 才会保存。也可以明确传入 `--save-credentials yes` 或 `--save-credentials no`（非交互环境默认不保存）。凭据保存在 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`，仅当前用户可读写。
 
 模型没有识图能力时，使用独立的 [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) 服务。把该仓库导入 Vercel 部署，然后设置服务根地址：
 
@@ -55,6 +58,8 @@ Environment:
 | `QFNU_JWXT_USERNAME` | 学号（也可 `--username`） |
 | `QFNU_JWXT_PASSWORD` | 教务密码（也可 `--password`） |
 | `QFNU_JWXT_COOKIE_PATH` | 会话 Cookie JSON 路径，默认 `~/.local/state/easy-qfnu-skill/jwxt-session.json` |
+| `QFNU_JWXT_CREDENTIALS_PATH` | 自动登录凭据路径，默认 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` |
+| `QFNU_JWXT_SAVE_CREDENTIALS` | 非交互登录的保存选择，只有值为 `yes` 才保存 |
 
 Do not commit credentials or the session file.
 
@@ -70,7 +75,14 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  #
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
-python3 easy-qfnu-skill/scripts/qfnu jwxt logout
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # 使用参数或环境变量/已保存凭据登录
+python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # 只清除会话，默认保留凭据
+python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # 同时清除会话和凭据
+python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # 只清除已保存凭据
 ```
+
+`jwxt status` 发现会话过期时，会在存在已保存凭据且配置 `QFNU_OCR_URL` 的情况下自动重登一次。未配置 OCR 时会返回手动验证码提示；密码错误或账号被顶下线会立即停止，不会循环重试。
+
+验证码错误只表示本次识别结果不匹配：重新运行 `jwxt captcha` 获取新图片和会话，再提交 `jwxt login --captcha`，最多连续尝试 3 次。不要把单次验证码错误误判为密码错误。
 
 Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`; JWXT needs network access to `zhjw.qfnu.edu.cn`; freshman search needs network access to `fq.easy-qfnu.top`. The independent ddddocr service is only needed when the model cannot read the captcha image itself.

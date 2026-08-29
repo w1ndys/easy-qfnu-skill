@@ -16,7 +16,7 @@ Login is 6 sequential steps on **one Cookie jar**:
 5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`
 6. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; 200 plus `教学一体化服务平台` or `glyphicon-class`
 
-Password errors stop immediately. Captcha errors restart from step 1, max 3 rounds. Network 5xx/429/timeout retries 3 times with 1s delay. If the site says the account logged in elsewhere, stop; do not auto-relogin.
+Password errors stop immediately. Captcha errors restart from step 1, max 3 rounds; this rule applies to OCR login and to the agent repeating the manual captcha + login --captcha pair. Network 5xx/429/timeout retries 3 times with 1s delay. If the site says the account logged in elsewhere, stop; automatic status recovery never retries this case.
 
 `encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. Implementation: `encode_credentials` in `scripts/qfnu_jwxt.py`.
 
@@ -26,7 +26,7 @@ Default login path, no OCR install needed:
 
 1. `python3 scripts/qfnu jwxt captcha --out <png>` — resets the jar, plants session cookies, downloads the captcha image, writes it to `<png>`, and persists the jar with `captcha_pending: true`.
 2. The agent reads the PNG with model vision.
-3. `python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>` — skips captcha fetch and OCR, reuses the persisted jar, fetches `scode#sxh`, builds `encoded`, submits. Wrong captcha → `ok: false` with a hint to re-run the `captcha` command for a new image.
+3. `python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>` — skips captcha fetch and OCR, reuses the persisted jar, fetches `scode#sxh`, builds `encoded`, submits. Wrong captcha only means this recognition missed; run `jwxt captcha` again for a new image and retry, up to 3 complete captcha sessions before reporting failure.
 
 When the model has no vision capability, deploy the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access hits network errors, do not auto-retry: show the `jwxt captcha` PNG to the user, let the user reply with the characters, and run `jwxt login --captcha "<用户读出的字符>"`. Never guess captcha text.
 
@@ -47,14 +47,22 @@ Cookies are written to `~/.local/state/easy-qfnu-skill/jwxt-session.json` (overr
 
 Credentials come from `--username/--password` or `QFNU_JWXT_USERNAME` / `QFNU_JWXT_PASSWORD`. Do not echo the password into chat logs.
 
+On the first interactive login, the CLI asks whether to save the credentials. Only an explicit `yes` saves them; pass `--save-credentials yes/no` to make the choice explicit. Non-interactive runs default to no unless `QFNU_JWXT_SAVE_CREDENTIALS=yes` is set. Saved credentials are stored at
+`~/.local/state/easy-qfnu-skill/jwxt-credentials.json` (override with `QFNU_JWXT_CREDENTIALS_PATH`), in a 0700 directory and 0600 file.
+
+Login credential precedence is command-line arguments, then environment variables, then saved credentials. `jwxt status` makes one automatic OCR login attempt after an expired session only when saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Wrong passwords and accounts kicked offline stop without another automatic attempt.
+
 ## CLI
 
 ```bash
 python3 scripts/qfnu jwxt captcha --out <png>             # 默认：模型识图 / 用户肉眼识图
 python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 python3 scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
+python3 scripts/qfnu jwxt login --save-credentials yes
 python3 scripts/qfnu jwxt status
-python3 scripts/qfnu jwxt logout
+python3 scripts/qfnu jwxt logout                         # 只清除会话，默认保留凭据
+python3 scripts/qfnu jwxt logout --forget-credentials   # 明确同时清除凭据
+python3 scripts/qfnu jwxt forget-credentials            # 只清除凭据
 ```
 
 JSON always includes `ok` and `source: "jwxt"`. Failures: `ok: false`, `error`, optional `hint`.
