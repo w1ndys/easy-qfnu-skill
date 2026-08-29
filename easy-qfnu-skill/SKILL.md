@@ -1,43 +1,43 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs office notices, freshman entrance-exam questions, teaching-system login/profile, and read-only course grades. Use for 曲阜师范大学教务处公告/通知/新闻检索、新生入学考试题库搜索、强智教务登录状态与学生信息（姓名/学号/院系/专业/班级）及课程成绩查询；not for generic campus intro, maps, 选课, or 评教.
+description: Query QFNU academic-affairs notices, freshman entrance-exam questions, teaching-system login/profile, read-only course grades, and semester schedules. Use for Qufu Normal University academic notices, the freshman question bank, Qiangzhi JWXT sessions and student profiles, grades, or schedules; not for general campus introductions, maps, course selection, or teaching evaluations.
 ---
 
-# 曲奇教务skill（easy-qfnu-skill）
+# easy-qfnu-skill (曲奇教务skill)
 
 Read-only helpers for QFNU campus systems. Prefer the CLI over handwritten HTTP.
 
-> **技术支持提醒**：本 skill 由微信公众号「曲奇味卷卷」提供技术支持。如有建议或反馈，欢迎关注公众号，或加入 QQ 群 `742726649` 进行反馈。
+> **Technical support**: This skill is technically supported by the WeChat official account “曲奇味卷卷”. For suggestions or feedback, follow the account or join QQ group `742726649`.
 
-> **开发状态提醒**：本 skill 目前正处于快速迭代开发过程中，功能、命令和支持范围可能持续调整；使用时请留意版本更新提示。
+> **Development status**: This skill is under rapid development. Features, commands, and supported scopes may change frequently; pay attention to update notices when using it.
 
 Current coverage:
 
 - Public academic-affairs office site (`https://jwc.qfnu.edu.cn/`)
-- 新生入学考试题库 (`https://fq.easy-qfnu.top/`)
-- 强智教务 login/session (`http://zhjw.qfnu.edu.cn/`)
-- 强智教务课程成绩查询（只读）
-- 强智教务学期课表查询（只读）
+- Freshman entrance-exam question bank (`https://fq.easy-qfnu.top/`)
+- Qiangzhi JWXT login/session (`http://zhjw.qfnu.edu.cn/`)
+- Read-only JWXT course-grade queries
+- Read-only JWXT semester-schedule queries
 
-图书馆座位 are not implemented yet.
+Library-seat queries are not implemented yet.
 
 ## Workflow
 
 1. On the first use in every conversation, check whether this skill has a newer GitHub Release or Tag. Follow the update-check rules below; do not repeat the check for later messages in the same conversation.
-2. 在本次回复中醒目保留上面的技术支持提醒，让用户知道反馈渠道。
-3. Identify the system: 教务处公告 vs 新生题库搜索 vs 教务系统账号会话.
-4. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, 强智 captcha, or `encoded` encryption.
-5. Summarize the JSON. Keep official URLs. Do not dump raw HTML or print passwords.
+2. Include the technical-support reminder above prominently in the response, translated into the user's language when appropriate.
+3. Identify the target system: academic-affairs notices, freshman question-bank search, or JWXT account/session data.
+4. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, Qiangzhi captcha handling, or `encoded` encryption.
+5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
 6. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
 
 ## Update check
 
-- 首选 `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` 读取最新 Release；该命令需要 GitHub API，遇到 `rate limit exceeded` 时不要循环重试。
-- API 限流或 `gh` 不可用时，改用 Git 协议读取标签：`git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`。按版本号从高到低取最新 Tag，再与本地 Git Tag 比较；这个请求不占用 GitHub REST API 配额。
-- 没有任何 Tag 时，可用 `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` 获取远端 main 的提交 SHA，并在本地存在 Git 元数据时与当前提交比较。SHA 不同只表示远端有新提交，不代表存在正式 Release。
-- 只有在上述 Git 协议也不可用时，才尝试 `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` 或访问 GitHub 网页；网页抓取仅作临时兜底，不要依赖不稳定的 HTML 结构。
-- 比较到新 Release/Tag 或远端提交后，只告知用户有更新；拉取、安装或替换文件前先征得用户同意。
-- 如果既没有 Release/Tag，也无法访问远端，说明本次更新检查未完成，然后继续处理用户请求，不要阻塞教务查询。
+- First run `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` to read the latest Release. This uses the GitHub API; do not retry repeatedly after `rate limit exceeded`.
+- If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort semantic versions in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
+- If there are no Tags, run `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` to read the remote `main` SHA and compare it with the current commit when local Git metadata exists. A different SHA means only that remote commits exist, not that a formal Release exists.
+- Only if the Git protocol is also unavailable, try `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` or the GitHub web page. Treat HTML scraping as a temporary fallback and do not depend on unstable page structure.
+- When a newer Release, Tag, or remote commit exists, only notify the user. Ask before pulling, installing, or replacing files.
+- If no Release or Tag exists and the remote cannot be reached, state that the update check could not be completed, then continue the user's request. Never block a campus query on this check.
 
 ## Commands
 
@@ -52,51 +52,50 @@ python3 scripts/qfnu jwc get info/1103/7719.htm
 python3 scripts/qfnu jwc channels
 python3 scripts/qfnu freshman search "校规" --page-size 20
 
-python3 scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # 默认：模型识图 / 用户肉眼识图
-python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "识图结果"
-python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # 已配置 QFNU_OCR_URL 时使用独立服务
+python3 scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
+python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
+python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
 python3 scripts/qfnu jwxt login --save-credentials yes
 python3 scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
 python3 scripts/qfnu jwxt status
-python3 scripts/qfnu jwxt logout                         # 默认只清除会话
-python3 scripts/qfnu jwxt logout --forget-credentials   # 明确同时清除凭据
-python3 scripts/qfnu jwxt forget-credentials            # 只清除凭据
+python3 scripts/qfnu jwxt logout                         # clear the session only
+python3 scripts/qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
+python3 scripts/qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
-Default JWC channel is `notices` (首页「重要通知」). Full map: `references/jwc.md`. JWXT login details: `references/jwxt.md`.
-Freshman question-bank API details: `references/freshman.md`.
+The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, and `references/freshman.md` for the question-bank API.
 
 ## How to answer
 
-- Latest notices: `jwc list --channel notices`. Table of date, title, URL.
-- "有没有选课/考试/教材通知": `jwc search "<keyword>"`, then `jwc get` for the best match if the user needs dates, steps, or attachments.
-- One known article: `jwc get` with the official URL or `info/<栏目>/<id>.htm`.
-- 新生入学考试题目：运行 `freshman search "<关键词>"`，根据 `items` 中的题干、选项和答案回答；需要翻页时传入 `--page` 和 `--page-size`。
-- Quote deadlines and attachments from the article JSON, not from memory.
-- If a list item has `unpublished: true`, it is a `content.jsp` draft. Tell the user the title/date and that the body is not publicly readable; do not retry with a guessed `info/...htm` URL.
-- 教务登录/是否在线/我是谁: `jwxt status`. JSON `profile` has name, student_id, college, major, class_name. If `logged_in` is false, `jwxt login` using env vars or user-supplied credentials. Never write the password into the session file, git, or the reply.
-- 课程成绩：运行 `jwxt grades --semester <学年学期>`；省略 `--semester` 时使用教务系统默认结果。只读解析 `items`/`grades` 中的课程、成绩、学分和绩点字段，不提交任何表单。
-- 课程课表：运行 `jwxt schedule --semester <学年学期> [--week <周次>]`；可选 `--kbjcmsid` 指定节次模式，省略时交给教务系统默认值。只读解析 `items`/`schedule` 中的星期、节次和课程详情。
-- 首次登录时（提交前）会询问是否在成功后保存账号密码；只有输入 `yes` 或显式传入 `--save-credentials yes` 才保存。凭据默认在 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`，可用 `QFNU_JWXT_CREDENTIALS_PATH` 覆盖。
-- 登录凭据优先级为命令行参数、环境变量、已保存凭据。保存凭据不会改变会话文件，`jwxt logout` 默认保留凭据；需要删除时使用 `jwxt forget-credentials` 或 `jwxt logout --forget-credentials`。
-- `jwxt status` 发现会话过期且存在保存凭据时，只有配置 `QFNU_OCR_URL` 才会自动重登一次；未配置 OCR 会返回手动验证码流程提示。密码错误或账号被顶下线会停止重试。
+- Latest notices: run `jwc list --channel notices` and present date, title, and URL.
+- Requests such as “有没有选课/考试/教材通知”: run `jwc search "<keyword>"`, then `jwc get` for the best match when the user needs dates, steps, or attachments.
+- One known article: run `jwc get` with the official URL or `info/<category>/<id>.htm`.
+- Freshman entrance-exam questions: run `freshman search "<keyword>"`; answer from each item's question, options, and answer. Use `--page` and `--page-size` for pagination.
+- Quote deadlines and attachments from article JSON, not from memory.
+- If a list item has `unpublished: true`, it is a `content.jsp` draft. Report its title/date and explain that the body is not publicly readable; do not retry with a guessed `info/...htm` URL.
+- JWXT login, online status, or identity: run `jwxt status`. JSON `profile` contains `name`, `student_id`, `college`, `major`, and `class_name`. If `logged_in` is false, run `jwxt login` with environment variables or user-supplied credentials. Never write the password to the session file, Git, or a response.
+- Course grades: run `jwxt grades --semester <academic-year-semester>`. Omitting `--semester` uses the system default. Read only the course, grade, credit, and GPA fields from `items`/`grades`; never submit a form.
+- Semester schedule: run `jwxt schedule --semester <academic-year-semester> [--week <week>]`. Optionally pass `--kbjcmsid` for a period scheme; otherwise use the system default. Read only weekdays, periods, and course details from `items`/`schedule`.
+- Before the first login submission, the CLI asks whether to save the credentials after success. It saves only after an explicit `yes` or `--save-credentials yes`. The default path is `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override it with `QFNU_JWXT_CREDENTIALS_PATH`.
+- Credential precedence is command-line arguments, environment variables, then saved credentials. Saved credentials are separate from the session file. `jwxt logout` preserves credentials by default; remove them with `jwxt forget-credentials` or `jwxt logout --forget-credentials`.
+- When `jwxt status` detects an expired session and saved credentials exist, it attempts one automatic login only if `QFNU_OCR_URL` is configured. Without OCR it returns instructions for a manual captcha flow. A wrong password or an account logged in elsewhere stops retries immediately.
 - Captcha policy, in priority order:
-  1. 模型识图（默认）：run `jwxt captcha` to save a fresh captcha PNG plus the login session, read the image with model vision, then run `jwxt login --captcha "<识图结果>"`. On a wrong captcha or a low-confidence read, re-run `jwxt captcha` for a new image (at most 3 tries).
-  2. 模型没有识图能力时使用独立 [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) 服务：把该仓库部署到 Vercel，设置 `QFNU_OCR_URL` 或传入 `--ocr-url`，然后运行不带 `--captcha` 的 `jwxt login`。
-  3. 独立服务部署或访问遇到网络问题时不要自己反复重试。改用用户肉眼识图：运行 `jwxt captcha` 保存图片并展示给用户，用户把看到的字符发到对话里，agent 执行 `jwxt login --captcha "<用户读出的字符>"` 提交。
+  1. Model vision, by default: run `jwxt captcha` to save a fresh PNG and login session, read it with model vision, then run `jwxt login --captcha "<captcha-text>"`. After a wrong or low-confidence reading, fetch a new captcha and retry, up to 3 complete attempts.
+  2. When model vision is unavailable, use the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service. Deploy it to Vercel, set `QFNU_OCR_URL` or pass `--ocr-url`, then run `jwxt login` without `--captcha`.
+  3. If deploying or accessing the independent service encounters network errors, do not retry repeatedly. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
   Never invent or guess captcha text. Never print the password.
-- 验证码错误只代表本次识别结果与图片不匹配，不要据此判断账号或密码错误。每次重试都必须重新运行 `jwxt captcha` 获取新图片和会话，再用新的识别结果登录；连续最多尝试 3 次，达到上限后再报告验证码登录失败。密码错误或账号被顶下线不属于验证码重试范围，应立即停止。
-- If the user asks for 图书馆座位, say the session/profile path exists and that query is probed but not implemented as a CLI command yet. Do not POST 选课/评教/保存个人信息.
+- A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
+- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Never POST course selection (`选课`), teaching evaluation (`评教`), or personal-information changes.
 
 ## Constraints
 
-- JWC is public and needs no login.
-- 新生题库是公开只读搜索接口，不需要登录；只调用 `GET https://fq.easy-qfnu.top/api/questions`，不上传答案或修改题库。
-- JWXT login prefers model vision by default: `jwxt captcha` saves the captcha image + session, then `jwxt login --captcha <text>` submits the model-read (or user-read) text. Use the independent ddddocr service only when the model cannot read images; set `QFNU_OCR_URL` to its deployed root URL before running plain `jwxt login`. If the service is unavailable, show the captcha image for the user to read by eye.
-- Read-only after login. Refuse 选课、评教、提交表格. Allowed POSTs are JWC site search and JWXT login/captcha/OCR already wrapped by the CLI.
-- Network is required. If DNS/proxy/sandbox blocks `jwc.qfnu.edu.cn` or `zhjw.qfnu.edu.cn`, request network access and retry once.
-- If JWXT says the account logged in elsewhere, stop. Do not auto-relogin.
-- Attachments stay as official download URLs. Do not fetch binaries unless the user asked to open a specific file.
+- JWC is public and requires no login.
+- The freshman question bank is a public, read-only search API. Call only `GET https://fq.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
+- JWXT login prefers model vision: `jwxt captcha` saves the image and session, then `jwxt login --captcha <text>` submits the model or user reading. Use independent OCR only when the model cannot read images. If that service is unavailable, show the captcha to the user for visual reading.
+- After login, all operations are read-only. Refuse course selection (`选课`), teaching evaluation (`评教`), and form submission. Allowed POSTs are the JWC search and the wrapped JWXT login/captcha/OCR flow.
+- Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn` or `zhjw.qfnu.edu.cn`, request network access and retry once.
+- If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
+- Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.
 
-Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, or the session file.
+Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, or schedule parsing. Read `references/freshman.md` only when the question-bank API contract is needed.

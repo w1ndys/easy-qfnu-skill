@@ -1,16 +1,16 @@
-# 曲奇教务skill（easy-qfnu-skill）
+# easy-qfnu-skill (曲奇教务skill)
 
-QFNU campus-system skill for AI agents.
+A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently.
 
 Current coverage:
 
-- Public notices on [曲阜师范大学教务处](https://jwc.qfnu.edu.cn/)
-- Login/session/profile for [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
-- Read-only course-grade queries from [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
-- Read-only semester timetable queries from [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
-- 新生入学考试题库搜索（调用 [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) 公开 API）
+- Public notices from the [QFNU Academic Affairs Office](https://jwc.qfnu.edu.cn/)
+- Login, session, and profile for the [Qiangzhi teaching system](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
+- Read-only course-grade queries from the Qiangzhi teaching system
+- Read-only semester-schedule queries from the Qiangzhi teaching system
+- Freshman entrance-exam question-bank search through the public [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) API
 
-Library seats are planned. The CLI is query-only; it will not 选课 or 评教.
+Library-seat queries are planned. The CLI is query-only and never performs course selection (`选课`) or teaching evaluation (`评教`).
 
 ## Skill layout
 
@@ -32,38 +32,38 @@ easy-qfnu-skill/
 
 ## Setup
 
-教务处公告只用 Python 标准库。强智登录默认走模型识图，不需要安装任何东西：
+Academic-affairs notices use only the Python standard library. Qiangzhi login uses model vision by default and requires no extra package:
 
 ```bash
-python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # 保存验证码图片 + 登录会话
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
+python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # save captcha image and login session
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
 ```
 
-首次登录时（提交前），命令行会询问是否在成功后保存账号密码；只有输入 `yes` 才会保存。也可以明确传入 `--save-credentials yes` 或 `--save-credentials no`（非交互环境默认不保存）。凭据保存在 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`，仅当前用户可读写。
+Before the first login submission, the CLI asks whether to save credentials after success. Only `yes` saves them. You can also pass `--save-credentials yes` or `--save-credentials no`; non-interactive environments default to no. Credentials are stored in `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` with access restricted to the current user.
 
-模型没有识图能力时，使用独立的 [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) 服务。把该仓库导入 Vercel 部署，然后设置服务根地址：
+When model vision is unavailable, use the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service. Deploy that repository to Vercel and set its root URL:
 
 ```bash
-export QFNU_OCR_URL="https://你的-ddddocr-域名.vercel.app"
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>
+export QFNU_OCR_URL="https://your-ddddocr-domain.vercel.app"
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password>
 ```
 
-服务接口为 `POST /ocr`，表单或 JSON 字段 `image` 接收验证码图片 Base64；完整调用示例见 ddddocr 仓库首页。
+The service exposes `POST /ocr`; form or JSON field `image` accepts Base64 captcha image data. See the ddddocr repository for a complete example.
 
-部署 OCR 遇到网络问题时不要自动反复重试：改用 `jwxt captcha` 保存验证码图片并展示给用户，用户把读到的字符发到对话里，再执行 `jwxt login --captcha "<用户读出的字符>"` 提交登录。
+If OCR deployment or access encounters network errors, do not retry automatically. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
 
-Environment:
+Environment variables:
 
-| 变量 | 说明 |
+| Variable | Description |
 |---|---|
-| `QFNU_OCR_URL` | 独立 ddddocr 服务根地址；未配置时只能使用 `--captcha` |
-| `QFNU_JWXT_USERNAME` | 学号（也可 `--username`） |
-| `QFNU_JWXT_PASSWORD` | 教务密码（也可 `--password`） |
-| `QFNU_JWXT_COOKIE_PATH` | 会话 Cookie JSON 路径，默认 `~/.local/state/easy-qfnu-skill/jwxt-session.json` |
-| `QFNU_JWXT_CREDENTIALS_PATH` | 自动登录凭据路径，默认 `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` |
-| `QFNU_JWXT_SAVE_CREDENTIALS` | 非交互登录的保存选择，只有值为 `yes` 才保存 |
+| `QFNU_OCR_URL` | Independent ddddocr service root URL; without it, login requires `--captcha` |
+| `QFNU_JWXT_USERNAME` | Student ID; alternative to `--username` |
+| `QFNU_JWXT_PASSWORD` | Teaching-system password; alternative to `--password` |
+| `QFNU_JWXT_COOKIE_PATH` | Session Cookie JSON path; default `~/.local/state/easy-qfnu-skill/jwxt-session.json` |
+| `QFNU_JWXT_CREDENTIALS_PATH` | Automatic-login credential path; default `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` |
+| `QFNU_JWXT_SAVE_CREDENTIALS` | Non-interactive save choice; only `yes` saves credentials |
 
-Do not commit credentials or the session file.
+Never commit credentials or the session file.
 
 ## CLI
 
@@ -73,22 +73,22 @@ python3 easy-qfnu-skill/scripts/qfnu jwc search "选课"
 python3 easy-qfnu-skill/scripts/qfnu jwc get info/1103/7719.htm
 python3 easy-qfnu-skill/scripts/qfnu freshman search "校规" --page-size 20
 
-python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # 默认：模型识图 / 用户肉眼识图
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
-python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
+python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
+python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in and profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 easy-qfnu-skill/scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # 使用参数或环境变量/已保存凭据登录
-python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # 只清除会话，默认保留凭据
-python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # 同时清除会话和凭据
-python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # 只清除已保存凭据
+python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # use arguments, environment, or saved credentials
+python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # clear the session; preserve credentials
+python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # clear session and credentials
+python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # clear saved credentials only
 ```
 
-`jwxt status` 发现会话过期时，会在存在已保存凭据且配置 `QFNU_OCR_URL` 的情况下自动重登一次。未配置 OCR 时会返回手动验证码提示；密码错误或账号被顶下线会立即停止，不会循环重试。
+When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.
 
-验证码错误只表示本次识别结果不匹配：重新运行 `jwxt captcha` 获取新图片和会话，再提交 `jwxt login --captcha`，最多连续尝试 3 次。不要把单次验证码错误误判为密码错误。
+A captcha error means only that the current reading does not match. Run `jwxt captcha` again for a new image and session, then submit `jwxt login --captcha`; allow at most 3 consecutive attempts. Do not treat one captcha error as a password error.
 
-`jwxt schedule` 返回 `items`/`schedule` 课表格，包含星期、节次、课程名称和单元格详情；空课表格不会输出。可用 `--week` 查询单周，省略时查询全部周次。
+`jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`; JWXT needs network access to `zhjw.qfnu.edu.cn`; freshman search needs network access to `fq.easy-qfnu.top`. The independent ddddocr service is only needed when the model cannot read the captcha image itself.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search requires `fq.easy-qfnu.top`. The independent ddddocr service is needed only when the model cannot read the captcha image itself.
