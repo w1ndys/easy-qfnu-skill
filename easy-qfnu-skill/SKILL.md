@@ -18,10 +18,19 @@ Current coverage:
 
 ## Workflow
 
-1. Identify the system: 教务处公告 vs 新生题库搜索 vs 教务系统账号会话.
-2. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, 强智 captcha, or `encoded` encryption.
-3. Summarize the JSON. Keep official URLs. Do not dump raw HTML or print passwords.
-4. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
+1. On the first use in every conversation, check whether this skill has a newer GitHub Release or Tag. Follow the update-check rules below; do not repeat the check for later messages in the same conversation.
+2. Identify the system: 教务处公告 vs 新生题库搜索 vs 教务系统账号会话.
+3. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, 强智 captcha, or `encoded` encryption.
+4. Summarize the JSON. Keep official URLs. Do not dump raw HTML or print passwords.
+5. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
+
+## Update check
+
+- First run `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` to read the latest published Release.
+- If the repository has no Release, run `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` and use the latest Tag instead.
+- Compare the latest Release/Tag with the local Git tag or commit when repository metadata is available. Only tell the user when an update exists; ask before pulling, installing, or replacing files.
+- If no Release or Tag exists, treat the repository as having no published version and continue the user's task.
+- If GitHub is unavailable, mention once that the update check could not be completed, then continue the user's task. Never block the requested campus query on this check.
 
 ## Commands
 
