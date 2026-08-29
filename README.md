@@ -6,6 +6,7 @@ Current coverage:
 
 - Public notices on [曲阜师范大学教务处](https://jwc.qfnu.edu.cn/)
 - Login/session/profile for [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
+- 新生入学考试题库搜索（调用 [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) 公开 API）
 
 Grades, schedule, and library seats are planned. The CLI is query-only; it will not 选课 or 评教.
 
@@ -18,6 +19,10 @@ easy-qfnu-skill/
   scripts/qfnu            # unified CLI
   scripts/qfnu_jwc.py     # academic-affairs office client
   scripts/qfnu_jwxt.py    # teaching-system login client
+  scripts/qfnu_freshman.py # freshman question-bank client
+  scripts/freshman_question_service.py # question-bank business logic
+  scripts/freshman_question_repository.py # question-bank API client
+  scripts/qfnu_types.py   # shared entities and payload types
   references/jwc.md
   references/jwxt.md
 ```
@@ -59,6 +64,7 @@ Do not commit credentials or the session file.
 python3 easy-qfnu-skill/scripts/qfnu jwc list --channel notices --limit 10
 python3 easy-qfnu-skill/scripts/qfnu jwc search "选课"
 python3 easy-qfnu-skill/scripts/qfnu jwc get info/1103/7719.htm
+python3 easy-qfnu-skill/scripts/qfnu freshman search "校规" --page-size 20
 
 python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # 默认：模型识图 / 用户肉眼识图
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
@@ -67,4 +73,4 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout
 ```
 
-Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`. JWXT needs network access to `zhjw.qfnu.edu.cn`; the independent ddddocr service is only needed when the model cannot read the captcha image itself.
+Output is JSON. JWC needs network access to `jwc.qfnu.edu.cn`; JWXT needs network access to `zhjw.qfnu.edu.cn`; freshman search needs network access to `fq.easy-qfnu.top`. The independent ddddocr service is only needed when the model cannot read the captcha image itself.

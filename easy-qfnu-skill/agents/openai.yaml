@@ -1,7 +1,7 @@
 interface:
   display_name: "Easy QFNU"
-  short_description: "Query QFNU academic-affairs notices and teaching-system session"
-  default_prompt: "Use $easy-qfnu-skill to list the latest 曲阜师范大学教务处 notices."
+  short_description: "Query QFNU notices, freshman questions, and teaching-system session"
+  default_prompt: "Use $easy-qfnu-skill to search 曲阜师范大学新生入学考试题库 or list 最新教务处通知."
   brand_color: "#1F4E79"
 
 policy:
