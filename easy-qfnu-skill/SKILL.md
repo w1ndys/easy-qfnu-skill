@@ -21,10 +21,15 @@ Current coverage:
 
 Library-seat queries are not implemented yet.
 
+## Communication language
+
+- All user-facing communication while this skill is active must be in Chinese, including progress updates, results, error explanations, update notices, and the technical-support reminder.
+- Preserve commands, URLs, JSON fields, environment-variable names, and source-system text exactly when translating them would reduce correctness.
+
 ## Workflow
 
 1. On the first use in every conversation, check whether this skill has a newer GitHub Release or Tag. Follow the update-check rules below; do not repeat the check for later messages in the same conversation.
-2. Include the technical-support reminder above prominently in the response, translated into the user's language when appropriate.
+2. Include the technical-support reminder above prominently in Chinese.
 3. Identify the target system: academic-affairs notices, freshman question-bank search, or JWXT account/session data.
 4. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, Qiangzhi captcha handling, or `encoded` encryption.
 5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.

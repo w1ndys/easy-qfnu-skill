@@ -2,6 +2,8 @@
 
 A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently.
 
+The skill instructions are written primarily in English, but every user-facing conversation produced while the skill is active must be in Chinese. Commands, URLs, JSON fields, and source-system text remain unchanged where translation would reduce correctness.
+
 Current coverage:
 
 - Public notices from the [QFNU Academic Affairs Office](https://jwc.qfnu.edu.cn/)
