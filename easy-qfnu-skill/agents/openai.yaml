@@ -1,6 +1,6 @@
 interface:
   display_name: "曲奇教务skill"
-  short_description: "Query QFNU notices, freshman questions, and teaching-system session"
+  short_description: "Query QFNU notices, freshman questions, grades, and teaching-system session"
   default_prompt: "Use $easy-qfnu-skill to search 曲阜师范大学新生入学考试题库 or list 最新教务处通知."
   brand_color: "#1F4E79"
 

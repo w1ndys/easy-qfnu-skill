@@ -23,6 +23,7 @@ def usage() -> int:
         "  freshman search <keyword> [--page 1] [--page-size 20]\n"
         "  jwxt captcha [--out 图片路径]\n"
         "  jwxt login [--username 学号] [--password 密码] [--captcha 识图结果] [--save-credentials yes|no]\n"
+        "  jwxt grades [--semester 学年学期]\n"
         "  jwxt status\n"
         "  jwxt logout [--forget-credentials]\n"
         "  jwxt forget-credentials\n"

@@ -6,9 +6,10 @@ Current coverage:
 
 - Public notices on [曲阜师范大学教务处](https://jwc.qfnu.edu.cn/)
 - Login/session/profile for [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
+- Read-only course-grade queries from [强智教务系统](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
 - 新生入学考试题库搜索（调用 [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) 公开 API）
 
-Grades, schedule, and library seats are planned. The CLI is query-only; it will not 选课 or 评教.
+Schedule and library seats are planned. The CLI is query-only; it will not 选课 or 评教.
 
 ## Skill layout
 
@@ -75,6 +76,7 @@ python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  #
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in + profile
+python3 easy-qfnu-skill/scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # 使用参数或环境变量/已保存凭据登录
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # 只清除会话，默认保留凭据
 python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # 同时清除会话和凭据

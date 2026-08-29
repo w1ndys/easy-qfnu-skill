@@ -59,6 +59,7 @@ python3 scripts/qfnu jwxt captcha --out <png>             # 默认：模型识�
 python3 scripts/qfnu jwxt login --username <学号> --password <密码> --captcha <识图结果>
 python3 scripts/qfnu jwxt login --username <学号> --password <密码>  # 已配置 QFNU_OCR_URL 时使用独立服务
 python3 scripts/qfnu jwxt login --save-credentials yes
+python3 scripts/qfnu jwxt grades --semester 2025-2026-3
 python3 scripts/qfnu jwxt status
 python3 scripts/qfnu jwxt logout                         # 只清除会话，默认保留凭据
 python3 scripts/qfnu jwxt logout --forget-credentials   # 明确同时清除凭据
@@ -101,7 +102,7 @@ All under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. Do not follow r
 | 用途 | URL | 备注 |
 |---|---|---|
 | 课程成绩查询壳 | `/jsxsd/kscj/cjcx_frm` | iframe：`cjcx_query` + `cjcx_list?kksj=<学年学期>` |
-| 成绩列表 | `/jsxsd/kscj/cjcx_list` | HTML 表。列：开课学期/课程编号/课程名称/分组名/成绩/成绩标识/学分/总学时/绩点/补重学期/考核方式/考试性质/课程属性/课程性质/课程类别。学期参数 `kksj`（如 `2025-2026-3`）。CLI 未实现。 |
+| 成绩列表 | `/jsxsd/kscj/cjcx_list` | HTML 表。列：开课学期/课程编号/课程名称/分组名/成绩/成绩标识/学分/总学时/绩点/补重学期/考核方式/考试性质/课程属性/课程性质/课程类别。学期参数 `kksj`（如 `2025-2026-3`）。CLI：`jwxt grades --semester <学年学期>`。 |
 | 等级考试成绩 | `/jsxsd/kscj/djkscj_list` | GET 200 |
 | 学期理论课表 | `/jsxsd/xskb/xskb_list.do` | 表单 GET/POST 自身。参数：`xnxq01id`（学年学期，当前默认 `2025-2026-3`）、`zc`（周次，空=全部）、`sfFD=1`（放大）、`kbjcmsid`（节次模式）。格子在 `#kbtable` / `.kbcontent`。CLI 未实现。 |
 | 首页当日课表碎片 | `/jsxsd/framework/main_index_loadkb.jsp?rq=YYYY-MM-DD` | 由 `xsMain_new` jQuery `.load` 拉入。可选 `sjmsValue`。 |
@@ -150,4 +151,4 @@ Write / 申请类（菜单有入口，skill 禁止调用提交）：学生评价
 
 ## Out of scope
 
-选课、评教、保存个人信息、提交任何业务表单。成绩/课表解析已探测，尚未做成 CLI。
+选课、评教、保存个人信息、提交任何业务表单。课表解析已探测，尚未做成 CLI；成绩查询可用 `jwxt grades`。
