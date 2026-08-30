@@ -13,15 +13,15 @@ Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation subm
 
 ## CLI binary
 
-The skill delegates network operations to the prebuilt Go `qfnu` CLI. The source is kept in the private [easy-qfnu-cli](https://github.com/w1ndys/easy-qfnu-cli) repository; users only need a release binary from the public [easy-qfnu-skill Releases](https://github.com/w1ndys/easy-qfnu-skill/releases/latest).
+The skill delegates network operations to the prebuilt `easy-qfnu` CLI. Users only need a release binary from the [latest Releases](https://github.com/w1ndys/easy-qfnu-skill/releases/latest).
 
 Install explicitly from the skill directory:
 
 ```bash
-./scripts/install-qfnu
+./scripts/install-easy-qfnu
 ```
 
-The installer verifies `checksums.txt`. The `scripts/qfnu` launcher accepts `QFNU_CLI_BIN` for a custom path, then searches `qfnu` in `PATH`; it never downloads a binary implicitly. If the binary is unavailable, stop and ask the user to install it rather than reconstructing the Python implementation or handwritten HTTP requests.
+The installer verifies `checksums.txt`. The `scripts/easy-qfnu` launcher accepts `QFNU_CLI_BIN` for a custom path, then searches `easy-qfnu` in `PATH`; it never downloads a binary implicitly. If the binary is unavailable, stop and ask the user to install it rather than reconstructing the implementation or handwritten HTTP requests.
 
 Current coverage:
 
@@ -41,48 +41,49 @@ Library-seat queries are not implemented yet.
 
 ## Workflow
 
-1. On the first use in every conversation, check whether this skill has a newer GitHub Release or Tag. Follow the update-check rules below; do not repeat the check for later messages in the same conversation.
+1. Before the first request in every conversation, update this skill to the latest public Release/Tag, verify its `VERSION` file, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
 3. Identify the target system: academic-affairs notices, freshman question-bank search, JWXT account/session data, or student evaluation.
-4. Run `scripts/qfnu` from this skill directory. Do not reconstruct VSB pagination, Qiangzhi captcha handling, or `encoded` encryption.
-5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
-6. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
+4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory CLI update check and compares the installed skill version with the public manifest before executing a command.
+5. If the CLI returns `update_required: true`, stop immediately. Complete every update listed in `updates`, reread the updated `SKILL.md`, and retry the original request.
+6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
+7. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
 
 ## Update check
 
 - First run `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` to read the latest Release. This uses the GitHub API; do not retry repeatedly after `rate limit exceeded`.
-- If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort semantic versions in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
+- If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort date-time tags (`vYYYY.MM.DD.HHmm`) in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
 - If there are no Tags, run `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` to read the remote `main` SHA and compare it with the current commit when local Git metadata exists. A different SHA means only that remote commits exist, not that a formal Release exists.
 - Only if the Git protocol is also unavailable, try `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` or the GitHub web page. Treat HTML scraping as a temporary fallback and do not depend on unstable page structure.
-- When a newer Release, Tag, or remote commit exists, only notify the user. Ask before pulling, installing, or replacing files.
-- If no Release or Tag exists and the remote cannot be reached, state that the update check could not be completed, then continue the user's request. Never block a campus query on this check.
+- When a newer Release, Tag, or remote commit exists, update the local skill before handling the user's request. For a Git checkout, run `git -C <skill-dir> pull --ff-only`; for a packaged installation, reinstall the latest public skill package. Verify the updated `VERSION` file, then reread the updated `SKILL.md`.
+- If the update check cannot be completed, stop and report the failure. Do not run a campus query with an unverified skill version.
 
 ## Commands
 
 Run from the skill root so `scripts/` resolves:
 
 ```bash
-qfnu jwc list --channel notices --limit 10
-qfnu jwc list --channel announcements --page 1
-qfnu jwc list --channel jwyx-notices --limit 5
-qfnu jwc search "选课" --limit 10
-qfnu jwc get info/1103/7719.htm
-qfnu jwc channels
-qfnu freshman search "校规" --page-size 20
+easy-qfnu jwc list --channel notices --limit 10
+easy-qfnu jwc list --channel announcements --page 1
+easy-qfnu jwc list --channel jwyx-notices --limit 5
+easy-qfnu jwc search "选课" --limit 10
+easy-qfnu jwc get info/1103/7719.htm
+easy-qfnu jwc channels
+easy-qfnu freshman search "校规" --page-size 20
 
-qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
-qfnu jwxt login --save-credentials yes
-qfnu jwxt grades --semester 2025-2026-3
-qfnu jwxt schedule --semester 2025-2026-3 --week 1
-qfnu jwxt evaluations
-qfnu jwxt evaluate --score 89                         # preview only
-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
-qfnu jwxt status
-qfnu jwxt logout                         # clear the session only
-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
-qfnu jwxt forget-credentials            # clear saved credentials only
+easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
+easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
+easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
+easy-qfnu jwxt login --save-credentials yes
+easy-qfnu jwxt grades --semester 2025-2026-3
+easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
+easy-qfnu jwxt evaluations
+easy-qfnu jwxt evaluate --score 89                         # preview only
+easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
+easy-qfnu jwxt status
+easy-qfnu jwxt logout                         # clear the session only
+easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
+easy-qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
 The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, and `references/freshman.md` for the question-bank API.

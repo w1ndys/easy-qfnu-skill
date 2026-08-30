@@ -1,9 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-# The implementation lives in the private Go repository. This public shim
-# keeps the skill's command path stable and never downloads or executes an
-# unverified binary implicitly.
+# This public shim keeps the skill's command path stable and never downloads
+# or executes an unverified binary implicitly.
 if [ -n "${QFNU_CLI_BIN:-}" ]; then
 	if [ ! -x "$QFNU_CLI_BIN" ]; then
 		echo "QFNU_CLI_BIN is not executable: $QFNU_CLI_BIN" >&2
@@ -12,14 +11,14 @@ if [ -n "${QFNU_CLI_BIN:-}" ]; then
 	exec "$QFNU_CLI_BIN" "$@"
 fi
 
-if command -v qfnu >/dev/null 2>&1; then
-	exec qfnu "$@"
+if command -v easy-qfnu >/dev/null 2>&1; then
+	exec easy-qfnu "$@"
 fi
 
 cat >&2 <<'EOF'
-未找到 qfnu Go CLI。
+未找到 easy-qfnu CLI。
 请先按照 skill 文档安装对应平台的二进制：
 https://github.com/w1ndys/easy-qfnu-skill/releases/latest
-也可以设置 QFNU_CLI_BIN 指向本地 qfnu 可执行文件。
+也可以设置 QFNU_CLI_BIN 指向本地 easy-qfnu 可执行文件。
 EOF
 exit 127

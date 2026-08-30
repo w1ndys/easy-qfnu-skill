@@ -21,8 +21,8 @@ Query parameters:
 CLI examples:
 
 ```bash
-qfnu freshman search "校规"
-qfnu freshman search "数学" --page 2 --page-size 20
+easy-qfnu freshman search "校规"
+easy-qfnu freshman search "数学" --page 2 --page-size 20
 ```
 
 ## Response fields

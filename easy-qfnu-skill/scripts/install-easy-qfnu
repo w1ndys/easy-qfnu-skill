@@ -18,7 +18,7 @@ case "$arch_name" in
   *) echo "不支持的 CPU 架构：$arch_name" >&2; exit 1 ;;
 esac
 
-binary="qfnu-${os_name}-${arch_name}"
+binary="easy-qfnu-${os_name}-${arch_name}"
 if [ "$os_name" = "windows" ]; then binary="${binary}.exe"; fi
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
@@ -32,15 +32,15 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   actual=$(shasum -a 256 "$tmp_dir/$binary" | awk '{print $1}')
 fi
-if [ "$actual" != "$expected" ]; then echo "qfnu 校验和不匹配，已中止安装" >&2; exit 1; fi
+if [ "$actual" != "$expected" ]; then echo "easy-qfnu 校验和不匹配，已中止安装" >&2; exit 1; fi
 
 mkdir -p "$install_dir"
 chmod 0755 "$tmp_dir/$binary"
 mv "$tmp_dir/$binary" "$install_dir/$binary"
 if [ "$os_name" = "windows" ]; then
-  cp "$install_dir/$binary" "$install_dir/qfnu.exe"
+  cp "$install_dir/$binary" "$install_dir/easy-qfnu.exe"
 else
-  ln -sf "$install_dir/$binary" "$install_dir/qfnu"
+  ln -sf "$install_dir/$binary" "$install_dir/easy-qfnu"
 fi
-echo "已安装 qfnu 到 $install_dir"
+echo "已安装 easy-qfnu 到 $install_dir"
 echo "请确认 $install_dir 已加入 PATH。"
