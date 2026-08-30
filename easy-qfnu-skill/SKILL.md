@@ -11,6 +11,18 @@ Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation subm
 
 > **Development status**: This skill is under rapid development. Features, commands, and supported scopes may change frequently; pay attention to update notices when using it.
 
+## CLI binary
+
+The skill delegates network operations to the prebuilt Go `qfnu` CLI. The source is kept in the private [easy-qfnu-cli](https://github.com/w1ndys/easy-qfnu-cli) repository; users only need a release binary from the public [easy-qfnu-skill Releases](https://github.com/w1ndys/easy-qfnu-skill/releases/latest).
+
+Install explicitly from the skill directory:
+
+```bash
+./scripts/install-qfnu
+```
+
+The installer verifies `checksums.txt`. The `scripts/qfnu` launcher accepts `QFNU_CLI_BIN` for a custom path, then searches `qfnu` in `PATH`; it never downloads a binary implicitly. If the binary is unavailable, stop and ask the user to install it rather than reconstructing the Python implementation or handwritten HTTP requests.
+
 Current coverage:
 
 - Public academic-affairs office site (`https://jwc.qfnu.edu.cn/`)
@@ -50,27 +62,27 @@ Library-seat queries are not implemented yet.
 Run from the skill root so `scripts/` resolves:
 
 ```bash
-python3 scripts/qfnu jwc list --channel notices --limit 10
-python3 scripts/qfnu jwc list --channel announcements --page 1
-python3 scripts/qfnu jwc list --channel jwyx-notices --limit 5
-python3 scripts/qfnu jwc search "选课" --limit 10
-python3 scripts/qfnu jwc get info/1103/7719.htm
-python3 scripts/qfnu jwc channels
-python3 scripts/qfnu freshman search "校规" --page-size 20
+qfnu jwc list --channel notices --limit 10
+qfnu jwc list --channel announcements --page 1
+qfnu jwc list --channel jwyx-notices --limit 5
+qfnu jwc search "选课" --limit 10
+qfnu jwc get info/1103/7719.htm
+qfnu jwc channels
+qfnu freshman search "校规" --page-size 20
 
-python3 scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
-python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
-python3 scripts/qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
-python3 scripts/qfnu jwxt login --save-credentials yes
-python3 scripts/qfnu jwxt grades --semester 2025-2026-3
-python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
-python3 scripts/qfnu jwxt evaluations
-python3 scripts/qfnu jwxt evaluate --score 89                         # preview only
-python3 scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
-python3 scripts/qfnu jwxt status
-python3 scripts/qfnu jwxt logout                         # clear the session only
-python3 scripts/qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
-python3 scripts/qfnu jwxt forget-credentials            # clear saved credentials only
+qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
+qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
+qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
+qfnu jwxt login --save-credentials yes
+qfnu jwxt grades --semester 2025-2026-3
+qfnu jwxt schedule --semester 2025-2026-3 --week 1
+qfnu jwxt evaluations
+qfnu jwxt evaluate --score 89                         # preview only
+qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
+qfnu jwxt status
+qfnu jwxt logout                         # clear the session only
+qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
+qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
 The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, and `references/freshman.md` for the question-bank API.

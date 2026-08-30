@@ -19,15 +19,15 @@ Login uses 6 sequential steps on **one Cookie jar**:
 
 Password errors stop immediately. Captcha errors restart from step 1, for at most 3 rounds. This applies both to OCR login and to the agent repeating the manual `captcha` + `login --captcha` pair. Retry network 5xx, 429, and timeout failures up to 3 times with a 1-second delay. If the site says the account is logged in elsewhere, stop; automatic status recovery never retries that case.
 
-`encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. See `encode_credentials` in `scripts/qfnu_jwxt.py`.
+`encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. The encoding is implemented inside the released Go binary.
 
 ### Captcha: model vision first
 
 The default path requires no OCR installation:
 
-1. Run `python3 scripts/qfnu jwxt captcha --out <png>`. It resets the jar, plants session cookies, downloads the image, writes `<png>`, and persists the jar with `captcha_pending: true`.
+1. Run `qfnu jwxt captcha --out <png>`. It resets the jar, plants session cookies, downloads the image, writes `<png>`, and persists the jar with `captcha_pending: true`.
 2. Read the PNG with model vision.
-3. Run `python3 scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>`. This skips image download and OCR, reuses the saved jar, fetches `scode#sxh`, builds `encoded`, and submits. A wrong captcha means only that this reading failed. Fetch a new image and retry, up to 3 complete captcha sessions before reporting failure.
+3. Run `qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>`. This skips image download and OCR, reuses the saved jar, fetches `scode#sxh`, builds `encoded`, and submits. A wrong captcha means only that this reading failed. Fetch a new image and retry, up to 3 complete captcha sessions before reporting failure.
 
 When model vision is unavailable, deploy the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access encounters network errors, do not retry automatically. Show the `jwxt captcha` PNG to the user, let the user read it, then run `jwxt login --captcha "<user-reading>"`. Never guess captcha text.
 
@@ -37,7 +37,7 @@ The ddddocr Flask service lives in a separate repository and is not bundled with
 
 ```bash
 export QFNU_OCR_URL="https://your-ddddocr-domain.vercel.app"
-python3 scripts/qfnu jwxt login --username <student-id> --password <password>
+qfnu jwxt login --username <student-id> --password <password>
 ```
 
 `QFNU_OCR_URL` and `--ocr-url` both accept the service root URL; the client appends `/ocr`. Contract: `POST /ocr` with form or JSON field `image` containing Base64 image data, returning `{ "code": 200, "data": "abcd", "message": "ok" }`. The service also exposes `GET /health`.
@@ -55,19 +55,19 @@ Credential precedence is command-line arguments, environment variables, then sav
 ## CLI
 
 ```bash
-python3 scripts/qfnu jwxt captcha --out <png>             # model vision or user visual reading
-python3 scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
-python3 scripts/qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
-python3 scripts/qfnu jwxt login --save-credentials yes
-python3 scripts/qfnu jwxt grades --semester 2025-2026-3
-python3 scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
-python3 scripts/qfnu jwxt evaluations
-python3 scripts/qfnu jwxt evaluate --score 89                         # preview only
-python3 scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
-python3 scripts/qfnu jwxt status
-python3 scripts/qfnu jwxt logout                         # clear the session; preserve credentials
-python3 scripts/qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
-python3 scripts/qfnu jwxt forget-credentials            # clear saved credentials only
+qfnu jwxt captcha --out <png>             # model vision or user visual reading
+qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
+qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
+qfnu jwxt login --save-credentials yes
+qfnu jwxt grades --semester 2025-2026-3
+qfnu jwxt schedule --semester 2025-2026-3 --week 1
+qfnu jwxt evaluations
+qfnu jwxt evaluate --score 89                         # preview only
+qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
+qfnu jwxt status
+qfnu jwxt logout                         # clear the session; preserve credentials
+qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
+qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
 JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `error`, and optionally `hint`.

@@ -21,26 +21,30 @@ Library-seat queries are planned. The CLI is query-only except for explicitly co
 easy-qfnu-skill/
   SKILL.md
   agents/openai.yaml
-  scripts/qfnu            # unified CLI
-  scripts/qfnu_jwc.py     # academic-affairs office client
-  scripts/qfnu_jwxt.py    # teaching-system login client
-  scripts/qfnu_xspj.py     # student-evaluation client
-  scripts/qfnu_freshman.py # freshman question-bank client
-  scripts/freshman_question_service.py # question-bank business logic
-  scripts/freshman_question_repository.py # question-bank API client
-  scripts/jwxt_credentials_repository.py # saved teaching-system credentials
-  scripts/qfnu_types.py   # shared entities and payload types
+  scripts/qfnu            # public launcher for the Go CLI
+  scripts/install-qfnu    # explicit binary installer
+  releases/README.md      # release and checksum policy
   references/jwc.md
   references/jwxt.md
 ```
 
+The Go CLI source is maintained in the private [easy-qfnu-cli](https://github.com/w1ndys/easy-qfnu-cli) repository. This public repository contains only skill instructions, references, the launcher, and compiled release assets.
+
 ## Setup
 
-Academic-affairs notices use only the Python standard library. Qiangzhi login uses model vision by default and requires no extra package:
+Install the prebuilt Go CLI for your platform from the [latest release](https://github.com/w1ndys/easy-qfnu-skill/releases/latest). Releases include SHA-256 checksums. On Linux or macOS, run the explicit installer from this skill directory:
 
 ```bash
-python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # save captcha image and login session
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
+./easy-qfnu-skill/scripts/install-qfnu
+```
+
+The launcher does not download binaries implicitly. If `qfnu` is not in `PATH`, set `QFNU_CLI_BIN` to an installed executable or run the installer above.
+
+Qiangzhi login uses model vision by default and requires no extra package:
+
+```bash
+qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # save captcha image and login session
+qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
 ```
 
 Before the first login submission, the CLI asks whether to save credentials after success. Only `yes` saves them. You can also pass `--save-credentials yes` or `--save-credentials no`; non-interactive environments default to no. Credentials are stored in `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` with access restricted to the current user.
@@ -49,7 +53,7 @@ When model vision is unavailable, use the independent [ddddocr-vercel](https://g
 
 ```bash
 export QFNU_OCR_URL="https://your-ddddocr-domain.vercel.app"
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password>
+qfnu jwxt login --username <student-id> --password <password>
 ```
 
 The service exposes `POST /ocr`; form or JSON field `image` accepts Base64 captcha image data. See the ddddocr repository for a complete example.
@@ -72,24 +76,24 @@ Never commit credentials or the session file.
 ## CLI
 
 ```bash
-python3 easy-qfnu-skill/scripts/qfnu jwc list --channel notices --limit 10
-python3 easy-qfnu-skill/scripts/qfnu jwc search "选课"
-python3 easy-qfnu-skill/scripts/qfnu jwc get info/1103/7719.htm
-python3 easy-qfnu-skill/scripts/qfnu freshman search "校规" --page-size 20
+qfnu jwc list --channel notices --limit 10
+qfnu jwc search "选课"
+qfnu jwc get info/1103/7719.htm
+qfnu freshman search "校规" --page-size 20
 
-python3 easy-qfnu-skill/scripts/qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
-python3 easy-qfnu-skill/scripts/qfnu jwxt status   # logged_in and profile
-python3 easy-qfnu-skill/scripts/qfnu jwxt grades --semester 2025-2026-3
-python3 easy-qfnu-skill/scripts/qfnu jwxt schedule --semester 2025-2026-3 --week 1
-python3 easy-qfnu-skill/scripts/qfnu jwxt evaluations
-python3 easy-qfnu-skill/scripts/qfnu jwxt evaluate --score 89                         # preview only
-python3 easy-qfnu-skill/scripts/qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
-python3 easy-qfnu-skill/scripts/qfnu jwxt login --save-credentials yes  # use arguments, environment, or saved credentials
-python3 easy-qfnu-skill/scripts/qfnu jwxt logout  # clear the session; preserve credentials
-python3 easy-qfnu-skill/scripts/qfnu jwxt logout --forget-credentials  # clear session and credentials
-python3 easy-qfnu-skill/scripts/qfnu jwxt forget-credentials  # clear saved credentials only
+qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
+qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
+qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
+qfnu jwxt status   # logged_in and profile
+qfnu jwxt grades --semester 2025-2026-3
+qfnu jwxt schedule --semester 2025-2026-3 --week 1
+qfnu jwxt evaluations
+qfnu jwxt evaluate --score 89                         # preview only
+qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
+qfnu jwxt login --save-credentials yes  # use arguments, environment, or saved credentials
+qfnu jwxt logout  # clear the session; preserve credentials
+qfnu jwxt logout --forget-credentials  # clear session and credentials
+qfnu jwxt forget-credentials  # clear saved credentials only
 ```
 
 When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.

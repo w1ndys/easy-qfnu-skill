@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+release_base="https://github.com/w1ndys/easy-qfnu-skill/releases/latest/download"
+install_dir="${QFNU_INSTALL_DIR:-$(cd ~ && pwd)/.local/bin}"
+os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch_name=$(uname -m)
+
+case "$os_name" in
+  linux*) os_name="linux" ;;
+  darwin*) os_name="darwin" ;;
+  msys*|mingw*|cygwin*) os_name="windows" ;;
+  *) echo "不支持的操作系统：$os_name" >&2; exit 1 ;;
+esac
+case "$arch_name" in
+  x86_64|amd64) arch_name="amd64" ;;
+  aarch64|arm64) arch_name="arm64" ;;
+  *) echo "不支持的 CPU 架构：$arch_name" >&2; exit 1 ;;
+esac
+
+binary="qfnu-${os_name}-${arch_name}"
+if [ "$os_name" = "windows" ]; then binary="${binary}.exe"; fi
+tmp_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+curl --fail --location --silent --show-error "$release_base/$binary" -o "$tmp_dir/$binary"
+curl --fail --location --silent --show-error "$release_base/checksums.txt" -o "$tmp_dir/checksums.txt"
+
+expected=$(awk -v name="$binary" '$2 == name {print $1}' "$tmp_dir/checksums.txt")
+if [ -z "$expected" ]; then echo "发布清单中没有 $binary" >&2; exit 1; fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp_dir/$binary" | awk '{print $1}')
+else
+  actual=$(shasum -a 256 "$tmp_dir/$binary" | awk '{print $1}')
+fi
+if [ "$actual" != "$expected" ]; then echo "qfnu 校验和不匹配，已中止安装" >&2; exit 1; fi
+
+mkdir -p "$install_dir"
+chmod 0755 "$tmp_dir/$binary"
+mv "$tmp_dir/$binary" "$install_dir/$binary"
+if [ "$os_name" = "windows" ]; then
+  cp "$install_dir/$binary" "$install_dir/qfnu.exe"
+else
+  ln -sf "$install_dir/$binary" "$install_dir/qfnu"
+fi
+echo "已安装 qfnu 到 $install_dir"
+echo "请确认 $install_dir 已加入 PATH。"

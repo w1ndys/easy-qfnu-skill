@@ -5,3 +5,4 @@ __pycache__/
 venv/
 easy-qfnu-skill/ocr/.venv/
 jwxt-session.json
+course_recommendation_data.db

@@ -98,10 +98,10 @@ Result markup matches the list parser (`h2 a` + `span.time` + summary `p`).
 ## CLI mapping
 
 ```bash
-python3 scripts/qfnu jwc list --channel <key> [--page N] [--limit N]
-python3 scripts/qfnu jwc get <url-or-info/category/id.htm>
-python3 scripts/qfnu jwc search "<keyword>" [--page N] [--limit N]
-python3 scripts/qfnu jwc channels
+qfnu jwc list --channel <key> [--page N] [--limit N]
+qfnu jwc get <url-or-info/category/id.htm>
+qfnu jwc search "<keyword>" [--page N] [--limit N]
+qfnu jwc channels
 ```
 
 `--limit` on page 1 of a list may fetch extra static pages so the caller can return more than one CMS page (default page size is 10).

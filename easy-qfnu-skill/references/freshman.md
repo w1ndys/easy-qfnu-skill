@@ -21,8 +21,8 @@ Query parameters:
 CLI examples:
 
 ```bash
-python3 scripts/qfnu freshman search "校规"
-python3 scripts/qfnu freshman search "数学" --page 2 --page-size 20
+qfnu freshman search "校规"
+qfnu freshman search "数学" --page 2 --page-size 20
 ```
 
 ## Response fields
