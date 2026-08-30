@@ -22,8 +22,8 @@ binary="qfnu-${os_name}-${arch_name}"
 if [ "$os_name" = "windows" ]; then binary="${binary}.exe"; fi
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
-curl --fail --location --silent --show-error "$release_base/$binary" -o "$tmp_dir/$binary"
-curl --fail --location --silent --show-error "$release_base/checksums.txt" -o "$tmp_dir/checksums.txt"
+curl --fail --location --connect-timeout 10 --max-time 120 --silent --show-error "$release_base/$binary" -o "$tmp_dir/$binary"
+curl --fail --location --connect-timeout 10 --max-time 30 --silent --show-error "$release_base/checksums.txt" -o "$tmp_dir/checksums.txt"
 
 expected=$(awk -v name="$binary" '$2 == name {print $1}' "$tmp_dir/checksums.txt")
 if [ -z "$expected" ]; then echo "发布清单中没有 $binary" >&2; exit 1; fi
