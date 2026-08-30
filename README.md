@@ -47,7 +47,7 @@ qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # save captcha image and login s
 qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
 ```
 
-Before the first login submission, the CLI asks whether to save credentials after success. Only `yes` saves them. You can also pass `--save-credentials yes` or `--save-credentials no`; non-interactive environments default to no. Credentials are stored in `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` with access restricted to the current user.
+Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. Credentials are stored in `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` with access restricted to the current user.
 
 When model vision is unavailable, use the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service. Deploy that repository to Vercel and set its root URL:
 

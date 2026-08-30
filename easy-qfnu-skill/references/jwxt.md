@@ -48,7 +48,7 @@ Cookies are written to `~/.local/state/easy-qfnu-skill/jwxt-session.json`; overr
 
 Credentials come from `--username`/`--password`, `QFNU_JWXT_USERNAME`/`QFNU_JWXT_PASSWORD`, or saved credentials. Never echo the password into chat logs.
 
-Before the first interactive login submission, the CLI asks whether to save credentials after a successful login. Only an explicit `yes` saves them. Use `--save-credentials yes/no` for an explicit choice. Non-interactive runs default to `no` unless `QFNU_JWXT_SAVE_CREDENTIALS=yes` is set. Saved credentials are stored at `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override the path with `QFNU_JWXT_CREDENTIALS_PATH`. Its parent directory uses mode `0700` and the file uses `0600`.
+Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. Saved credentials are stored at `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override the path with `QFNU_JWXT_CREDENTIALS_PATH`. Its parent directory uses mode `0700` and the file uses `0600`.
 
 Credential precedence is command-line arguments, environment variables, then saved credentials. After an expired session, `jwxt status` makes one automatic OCR login attempt only when saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Wrong passwords and accounts logged in elsewhere stop without another automatic attempt.
 
