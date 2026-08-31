@@ -8,6 +8,8 @@ Current coverage: login, session, student profile, course grades, semester sched
 
 ## Authentication
 
+Before fetching a captcha or attempting login, inspect a user-supplied password for Chinese or full-width punctuation. If any is present, stop and prominently warn the user in Chinese: punctuation in a normal JWXT password should be English half-width characters; verify the password and retry. Never silently convert punctuation, guess the intended characters, or echo the password.
+
 Login uses 6 sequential steps on **one Cookie jar**:
 
 1. `GET /` — plant session cookies
