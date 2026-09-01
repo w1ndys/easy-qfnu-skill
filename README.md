@@ -11,7 +11,7 @@ Current coverage:
 - Read-only course-grade queries from the Qiangzhi teaching system
 - Read-only semester-schedule queries from the Qiangzhi teaching system
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
-- Freshman entrance-exam question-bank search through the public [fq.easy-qfnu.top](https://fq.easy-qfnu.top/) API
+- Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
 
 Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; it never performs course selection (`选课`).
 
@@ -105,4 +105,4 @@ A captcha error means only that the current reading does not match. Run `jwxt ca
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search requires `fq.easy-qfnu.top`. The independent ddddocr service is needed only when the model cannot read the captcha image itself.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search requires `freshman-exam.easy-qfnu.top`. The independent ddddocr service is needed only when the model cannot read the captcha image itself.

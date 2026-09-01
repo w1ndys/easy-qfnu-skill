@@ -26,7 +26,7 @@ The installer verifies `checksums.txt`. The `scripts/easy-qfnu` launcher accepts
 Current coverage:
 
 - Public academic-affairs office site (`https://jwc.qfnu.edu.cn/`)
-- Freshman entrance-exam question bank (`https://fq.easy-qfnu.top/`)
+- Freshman entrance-exam question bank (`https://freshman-exam.easy-qfnu.top/`)
 - Qiangzhi JWXT login/session (`http://zhjw.qfnu.edu.cn/`)
 - Read-only JWXT course-grade queries
 - Read-only JWXT semester-schedule queries
@@ -114,7 +114,7 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
 ## Constraints
 
 - JWC is public and requires no login.
-- The freshman question bank is a public, read-only search API. Call only `GET https://fq.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
+- The freshman question bank is a public, read-only search API. Call only `GET https://freshman-exam.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
 - JWXT login prefers model vision: `jwxt captcha` saves the image and session, then `jwxt login --captcha <text>` submits the model or user reading. Use independent OCR only when the model cannot read images. If that service is unavailable, show the captcha to the user for visual reading.
 - After login, operations are read-only by default. Refuse course selection (`选课`) and all other business forms. Student-evaluation POSTs are allowed only through `jwxt evaluate --confirm` after the user has approved the exact preview; never submit a hidden or guessed payload.
 - Do not copy the legacy project's “先用 89 分清除系统限制” or similar restriction-bypass workflow. Submit each pending course at most once per command. Never automatically retry an evaluation POST; if the response is ambiguous, stop and tell the user to verify the official teaching-system page.

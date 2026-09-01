@@ -1,13 +1,13 @@
 # Freshman entrance-exam question bank
 
-Homepage: `https://fq.easy-qfnu.top/`
+Homepage: `https://freshman-exam.easy-qfnu.top/`
 
 This skill calls only the public question-bank search API. It requires no login and never submits or modifies questions.
 
 ## API
 
 ```text
-GET https://fq.easy-qfnu.top/api/questions
+GET https://freshman-exam.easy-qfnu.top/api/questions
 ```
 
 Query parameters:
