@@ -42,10 +42,10 @@ Library-seat queries are not implemented yet.
 
 ## Workflow
 
-1. Before the first request in every conversation, update this skill to the latest public Release/Tag, verify its `VERSION` file, and reread the updated `SKILL.md`. Do not continue with stale instructions.
+1. Before the first request in every conversation, read the latest public Release/Tag, update this skill to that Release/Tag, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
 3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, JWXT account/session data, or student evaluation.
-4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory CLI update check and compares the installed skill version with the public manifest before executing a command.
+4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory update check against the latest public Release manifest; the Release tag is the single version source.
 5. If the CLI returns `update_required: true`, stop immediately. Complete every update listed in `updates`, reread the updated `SKILL.md`, and retry the original request.
 6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
 7. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
@@ -56,7 +56,7 @@ Library-seat queries are not implemented yet.
 - If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort date-time tags (`vYYYY.MM.DD.HH`) in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
 - If there are no Tags, run `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` to read the remote `main` SHA and compare it with the current commit when local Git metadata exists. A different SHA means only that remote commits exist, not that a formal Release exists.
 - Only if the Git protocol is also unavailable, try `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` or the GitHub web page. Treat HTML scraping as a temporary fallback and do not depend on unstable page structure.
-- When a newer Release, Tag, or remote commit exists, update the local skill before handling the user's request. For a Git checkout, run `git -C <skill-dir> pull --ff-only`; for a packaged installation, reinstall the latest public skill package. Verify the updated `VERSION` file, then reread the updated `SKILL.md`.
+- When a newer Release, Tag, or remote commit exists, update the local skill before handling the user's request. For a Git checkout, run `git -C <skill-dir> pull --ff-only`; for a packaged installation, reinstall the latest public skill package, then reread the updated `SKILL.md`.
 - If the update check cannot be completed, stop and report the failure. Do not run a campus query with an unverified skill version.
 
 ## Commands

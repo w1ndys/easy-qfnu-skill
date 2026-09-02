@@ -21,7 +21,6 @@ Library-seat queries are planned. The CLI is query-only except for explicitly co
 ```text
 easy-qfnu-skill/
   SKILL.md
-  VERSION
   agents/openai.yaml
   scripts/easy-qfnu         # public launcher for the Go CLI
   scripts/install-easy-qfnu # explicit binary installer
@@ -41,7 +40,7 @@ Install the prebuilt Go CLI for your platform from the [latest release](https://
 
 The launcher does not download binaries implicitly. If `easy-qfnu` is not in `PATH`, set `QFNU_CLI_BIN` to an installed executable or run the installer above.
 
-每次使用前先更新本 skill 到最新公开 Release/Tag，并重新读取 `easy-qfnu-skill/SKILL.md`。CLI 启动时还会读取 Release 的 `manifest.json`，同时检查 CLI 和 skill 版本；如果返回 `update_required: true`，必须完成提示中的更新后再重试。
+每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `easy-qfnu-skill/SKILL.md`。CLI 启动时读取 Release 的 `manifest.json`，以 Release 标签作为 Release、CLI 和 skill 的统一版本来源；如果返回 `update_required: true`，必须完成提示中的 CLI 更新后再重试。
 
 Qiangzhi login uses model vision by default and requires no extra package:
 
