@@ -1,6 +1,6 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs notices, freshman entrance-exam questions, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or course selection.
+description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public pre-course schedules, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, public pre-course data, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or course-selection actions.
 ---
 
 # easy-qfnu-skill (曲奇教务skill)
@@ -31,6 +31,7 @@ Current coverage:
 - Read-only JWXT course-grade queries
 - Read-only JWXT semester-schedule queries
 - JWXT student-evaluation preview and explicitly confirmed submission
+- Public read-only pre-course catalog and schedule queries (no JWXT login)
 
 Library-seat queries are not implemented yet.
 
@@ -43,7 +44,7 @@ Library-seat queries are not implemented yet.
 
 1. Before the first request in every conversation, update this skill to the latest public Release/Tag, verify its `VERSION` file, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
-3. Identify the target system: academic-affairs notices, freshman question-bank search, JWXT account/session data, or student evaluation.
+3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, JWXT account/session data, or student evaluation.
 4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory CLI update check and compares the installed skill version with the public manifest before executing a command.
 5. If the CLI returns `update_required: true`, stop immediately. Complete every update listed in `updates`, reread the updated `SKILL.md`, and retry the original request.
 6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
@@ -52,7 +53,7 @@ Library-seat queries are not implemented yet.
 ## Update check
 
 - First run `gh release view --repo w1ndys/easy-qfnu-skill --json tagName,publishedAt,url` to read the latest Release. This uses the GitHub API; do not retry repeatedly after `rate limit exceeded`.
-- If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort date-time tags (`vYYYY.MM.DD.HHmm`) in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
+- If the API is rate-limited or `gh` is unavailable, use the Git protocol: `git ls-remote --tags --refs https://github.com/w1ndys/easy-qfnu-skill.git`. Sort date-time tags (`vYYYY.MM.DD.HH`) in descending order, select the newest Tag, and compare it with the local Git Tag. This request does not consume GitHub REST API quota.
 - If there are no Tags, run `git ls-remote https://github.com/w1ndys/easy-qfnu-skill.git refs/heads/main` to read the remote `main` SHA and compare it with the current commit when local Git metadata exists. A different SHA means only that remote commits exist, not that a formal Release exists.
 - Only if the Git protocol is also unavailable, try `gh api repos/w1ndys/easy-qfnu-skill/tags --jq '.[0]'` or the GitHub web page. Treat HTML scraping as a temporary fallback and do not depend on unstable page structure.
 - When a newer Release, Tag, or remote commit exists, update the local skill before handling the user's request. For a Git checkout, run `git -C <skill-dir> pull --ff-only`; for a packaged installation, reinstall the latest public skill package. Verify the updated `VERSION` file, then reread the updated `SKILL.md`.
@@ -70,6 +71,10 @@ easy-qfnu jwc search "选课" --limit 10
 easy-qfnu jwc get info/1103/7719.htm
 easy-qfnu jwc channels
 easy-qfnu freshman search "校规" --page-size 20
+easy-qfnu precourse search "音乐鉴赏"
+easy-qfnu precourse search --teacher-name "王" --campus "日照"
+easy-qfnu precourse meta
+easy-qfnu precourse popular --field teacherName
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
 easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
@@ -86,7 +91,7 @@ easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and cred
 easy-qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
-The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, and `references/freshman.md` for the question-bank API.
+The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, and `references/precourses.md` for the public pre-course query.
 
 ## How to answer
 
@@ -94,6 +99,7 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
 - Requests such as “有没有选课/考试/教材通知”: run `jwc search "<keyword>"`, then `jwc get` for the best match when the user needs dates, steps, or attachments.
 - One known article: run `jwc get` with the official URL or `info/<category>/<id>.htm`.
 - Freshman entrance-exam questions: run `freshman search "<keyword>"`; answer from each item's question, options, and answer. Use `--page` and `--page-size` for pagination.
+- Public pre-course data: run `precourse search [keyword]` with optional field filters; no JWXT login is needed. Use `precourse meta` when the data update time matters, and report that the source is a scheduled snapshot with a maximum of 500 results.
 - Quote deadlines and attachments from article JSON, not from memory.
 - If a list item has `unpublished: true`, it is a `content.jsp` draft. Report its title/date and explain that the body is not publicly readable; do not retry with a guessed `info/...htm` URL.
 - JWXT login, online status, or identity: before any login attempt, inspect a user-supplied password for Chinese or full-width punctuation. If any is present, do not fetch a captcha or run `jwxt login`; prominently warn the user in Chinese that punctuation in a normal JWXT password should be English half-width characters, and ask them to verify the password and retry. Never silently convert punctuation, guess the intended characters, or echo the password. After this preflight passes, run `jwxt status`. JSON `profile` contains `name`, `student_id`, `college`, `major`, and `class_name`. If `logged_in` is false, run `jwxt login` with environment variables or user-supplied credentials. Never write the password to the session file, Git, or a response.
@@ -109,17 +115,18 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
   3. If deploying or accessing the independent service encounters network errors, do not retry repeatedly. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
   Never invent or guess captcha text. Never print the password.
 - A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
-- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Never POST course selection (`选课`) or personal-information changes.
+- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Actual course selection or preselection remains prohibited; the separate public pre-course catalog query is read-only and does not submit enrollment actions.
 
 ## Constraints
 
 - JWC is public and requires no login.
 - The freshman question bank is a public, read-only search API. Call only `GET https://freshman-exam.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
+- The public pre-course catalog is read-only and requires no JWXT login. Use the CLI command only, never request or expose an upstream API key; provide at least one non-empty condition and do not imply that snapshot data is a real-time enrollment result.
 - JWXT login prefers model vision: `jwxt captcha` saves the image and session, then `jwxt login --captcha <text>` submits the model or user reading. Use independent OCR only when the model cannot read images. If that service is unavailable, show the captcha to the user for visual reading.
-- After login, operations are read-only by default. Refuse course selection (`选课`) and all other business forms. Student-evaluation POSTs are allowed only through `jwxt evaluate --confirm` after the user has approved the exact preview; never submit a hidden or guessed payload.
+- After JWXT login, operations are read-only by default. Refuse actual course selection, preselection, and all other business forms. The public pre-course catalog is a separate read-only data query; it never authorizes or performs selection.
 - Do not copy the legacy project's “先用 89 分清除系统限制” or similar restriction-bypass workflow. Submit each pending course at most once per command. Never automatically retry an evaluation POST; if the response is ambiguous, stop and tell the user to verify the official teaching-system page.
-- Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn` or `zhjw.qfnu.edu.cn`, request network access and retry once.
+- Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn`, `zhjw.qfnu.edu.cn`, or the public pre-course service, request network access and retry once.
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
 - Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.
 
-Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, or schedule parsing. Read `references/freshman.md` only when the question-bank API contract is needed.
+Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, or schedule parsing. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed.

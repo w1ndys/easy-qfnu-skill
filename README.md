@@ -12,8 +12,9 @@ Current coverage:
 - Read-only semester-schedule queries from the Qiangzhi teaching system
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
+- Public read-only pre-course catalog and schedule queries (no JWXT login)
 
-Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; it never performs course selection (`选课`).
+Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; it never performs course selection or preselection (`选课`/`预选课`).
 
 ## Skill layout
 
@@ -27,6 +28,7 @@ easy-qfnu-skill/
   releases/README.md        # release and checksum policy
   references/jwc.md
   references/jwxt.md
+  references/precourses.md
 ```
 
 ## Setup
@@ -81,6 +83,10 @@ easy-qfnu jwc list --channel notices --limit 10
 easy-qfnu jwc search "选课"
 easy-qfnu jwc get info/1103/7719.htm
 easy-qfnu freshman search "校规" --page-size 20
+easy-qfnu precourse search "音乐鉴赏"
+easy-qfnu precourse search --teacher-name "王" --campus "日照"
+easy-qfnu precourse meta
+easy-qfnu precourse popular --field teacherName
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
@@ -105,4 +111,4 @@ A captcha error means only that the current reading does not match. Run `jwxt ca
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search requires `freshman-exam.easy-qfnu.top`. The independent ddddocr service is needed only when the model cannot read the captcha image itself.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search and public pre-course queries require their respective read-only services. Pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result.

@@ -170,8 +170,8 @@ Useful read-only `data-url` values, all prefixed with `/jsxsd`:
 | Program plan and completion (`培养方案及完成情况`) | `/pyfa/topyfamx` |
 | Academic calendar (`教学周历查看`) | `/jxzl/jxzl_query` |
 
-Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` flow: deferred-exam requests, make-up exam registration, course selection (`/xsxk/xklc_list`), preselection, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`).
+Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` flow: deferred-exam requests, make-up exam registration, actual course selection (`/jsxsd/xsxk/xklc_list`), preselection or any other enrollment action, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`). The separate public `precourse` catalog query is read-only and does not authorize any of these actions.
 
 ## Out of scope
 
-Course selection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.
+Course selection, preselection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. The public `precourse` catalog is a separate read-only snapshot query. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.
