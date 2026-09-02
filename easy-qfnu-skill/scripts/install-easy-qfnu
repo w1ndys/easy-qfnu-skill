@@ -1,8 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+skill_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+install_dir="$skill_dir/bin"
+
+if [ -n "${QFNU_INSTALL_DIR:-}" ]; then
+  echo "不支持 QFNU_INSTALL_DIR：CLI 必须安装到 skill 目录。" >&2
+  exit 1
+fi
+
 release_base="https://github.com/w1ndys/easy-qfnu-skill/releases/latest/download"
-install_dir="${QFNU_INSTALL_DIR:-$(cd ~ && pwd)/.local/bin}"
 os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch_name=$(uname -m)
 
@@ -43,4 +51,4 @@ else
   ln -sf "$install_dir/$binary" "$install_dir/easy-qfnu"
 fi
 echo "已安装 easy-qfnu 到 $install_dir"
-echo "请确认 $install_dir 已加入 PATH。"
+echo "请通过 skill 目录中的 ./scripts/easy-qfnu 使用，无需加入 PATH。"

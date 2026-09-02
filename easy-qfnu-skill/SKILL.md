@@ -21,7 +21,7 @@ Install explicitly from the skill directory:
 ./scripts/install-easy-qfnu
 ```
 
-The installer verifies `checksums.txt`. The `scripts/easy-qfnu` launcher accepts `QFNU_CLI_BIN` for a custom path, then searches `easy-qfnu` in `PATH`; it never downloads a binary implicitly. If the binary is unavailable, stop and ask the user to install it rather than reconstructing the implementation or handwritten HTTP requests.
+The installer verifies `checksums.txt` and always installs the platform binary under `./bin/`, next to this `SKILL.md`. It never installs the CLI into `~/.local/bin` or another home-directory path. Run `./scripts/easy-qfnu` from this skill directory; it uses the verified binary in `./bin/` and does not require `PATH`. `QFNU_CLI_BIN` is reserved for explicit development or diagnostic overrides. If the local binary is unavailable, stop and ask the user to run the installer rather than reconstructing the implementation or handwritten HTTP requests.
 
 Current coverage:
 
