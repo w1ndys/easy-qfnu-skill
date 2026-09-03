@@ -16,7 +16,7 @@ Login uses 6 sequential steps on **one Cookie jar**:
 2. `GET /verifycode.servlet` — download captcha image bytes
 3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`; call this only when an independent OCR service is configured. Model vision skips this step.
 4. `POST /Logon.do?method=logon&flag=sess` — empty body → `scode#sxh`
-5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`
+5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`; the CLI follows the returned same-origin SSO redirect chain to establish the JSXSD session, but never follows an external-origin redirect.
 6. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; success is HTTP 200 plus `教学一体化服务平台` or `glyphicon-class`
 
 Password errors stop immediately. Captcha errors restart from step 1, for at most 3 rounds. This applies both to OCR login and to the agent repeating the manual `captcha` + `login --captcha` pair. Retry network 5xx, 429, and timeout failures up to 3 times with a 1-second delay. If the site says the account is logged in elsewhere, stop; automatic status recovery never retries that case.
@@ -116,7 +116,7 @@ These guessed paths returned `非法访问`: `/jsxsd/grxx/xsxx`, `/jsxsd/grxx/xs
 
 ## Probed read-only endpoints
 
-All paths are under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. Do not follow redirects on authentication-sensitive pages. If the body contains `请输入账号`, `请输入密码`, and `请输入验证码`, the session is expired.
+All paths are under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. The CLI follows same-origin redirects only during the login handoff; keep redirects manual on authentication-sensitive query/profile pages. If the body contains `请输入账号`, `请输入密码`, and `请输入验证码`, the session is expired.
 
 ### Confirmed HTTP 200 while logged in
 
