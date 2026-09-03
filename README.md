@@ -33,13 +33,13 @@ easy-qfnu-skill/
 
 ## Setup
 
-Install the prebuilt Go CLI for your platform from the [latest release](https://github.com/w1ndys/easy-qfnu-skill/releases/latest). Releases include SHA-256 checksums. From the repository root, run the explicit installer:
+Install the prebuilt Go CLI for your platform from the [latest release](https://github.com/w1ndys/easy-qfnu-skill/releases/latest). The installer tries the `gh-proxy.com` acceleration mirror first and falls back to the official GitHub Release URL if the mirror is unavailable. It verifies `checksums.txt` before installation. From the repository root, run the explicit installer:
 
 ```bash
 ./easy-qfnu-skill/scripts/install-easy-qfnu
 ```
 
-The installer verifies the checksum and always writes the CLI under `easy-qfnu-skill/bin/`; it never installs to `~/.local/bin` or another home-directory path, and it does not require adding anything to `PATH`. Use `easy-qfnu-skill/scripts/easy-qfnu` to invoke the skill-local binary. `QFNU_CLI_BIN` is only an explicit development or diagnostic override.
+The installer always writes the CLI under `easy-qfnu-skill/bin/`; it never installs to `~/.local/bin` or another home-directory path, and it does not require adding anything to `PATH`. Use `easy-qfnu-skill/scripts/easy-qfnu` to invoke the skill-local binary. `QFNU_CLI_BIN` is only an explicit development or diagnostic override.
 
 每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `easy-qfnu-skill/SKILL.md`。CLI 启动时读取 Release 的 `manifest.json`，以 Release 标签作为 Release、CLI 和 skill 的统一版本来源；如果返回 `update_required: true`，必须完成提示中的 CLI 更新后再重试。
 

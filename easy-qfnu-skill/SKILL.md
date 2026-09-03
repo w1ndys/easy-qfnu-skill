@@ -21,7 +21,13 @@ Install explicitly from the skill directory:
 ./scripts/install-easy-qfnu
 ```
 
-The installer verifies `checksums.txt` and always installs the platform binary under `./bin/`, next to this `SKILL.md`. It never installs the CLI into `~/.local/bin` or another home-directory path. Run `./scripts/easy-qfnu` from this skill directory; it uses the verified binary in `./bin/` and does not require `PATH`. `QFNU_CLI_BIN` is reserved for explicit development or diagnostic overrides. If the local binary is unavailable, stop and ask the user to run the installer rather than reconstructing the implementation or handwritten HTTP requests.
+The installer tries the `gh-proxy.com` acceleration mirror first, using URLs in this form:
+
+```text
+https://gh-proxy.com/https://github.com/w1ndys/easy-qfnu-skill/releases/latest/download/<asset>
+```
+
+If the mirror is unavailable, it falls back to the official GitHub Release URL. It verifies `checksums.txt` before installing and always writes the platform binary under `./bin/`, next to this `SKILL.md`. It never installs the CLI into `~/.local/bin` or another home-directory path. Run `./scripts/easy-qfnu` from this skill directory; it uses the verified binary in `./bin/` and does not require `PATH`. `QFNU_CLI_BIN` is reserved for explicit development or diagnostic overrides. If the local binary is unavailable, stop and ask the user to run the installer rather than reconstructing the implementation or handwritten HTTP requests.
 
 Current coverage:
 
