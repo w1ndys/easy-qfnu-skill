@@ -1,6 +1,6 @@
 # easy-qfnu-skill (曲奇教务skill)
 
-A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission is supported only after an explicit confirmation gate.
+A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission and recommendation submission are supported only after an explicit confirmation gate.
 
 The skill instructions are written primarily in English, but every user-facing conversation produced while the skill is active must be in Chinese. Commands, URLs, JSON fields, and source-system text remain unchanged where translation would reduce correctness.
 
@@ -13,8 +13,9 @@ Current coverage:
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
 - Public read-only pre-course catalog and schedule queries (no JWXT login)
+- Public read-only course and teacher recommendations (no JWXT login)
 
-Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; it never performs course selection or preselection (`选课`/`预选课`).
+Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions and recommendation submissions; it never performs course selection or preselection (`选课`/`预选课`).
 
 ## Skill layout
 
@@ -29,6 +30,7 @@ easy-qfnu-skill/
   references/jwc.md
   references/jwxt.md
   references/precourses.md
+  references/recommendations.md
 ```
 
 ## Setup
@@ -87,6 +89,8 @@ easy-qfnu precourse search "音乐鉴赏"
 easy-qfnu precourse search --teacher-name "王" --campus "日照"
 easy-qfnu precourse meta
 easy-qfnu precourse popular --field teacherName
+easy-qfnu recommendation search --course "高等数学"
+easy-qfnu recommendation search --teacher "张" --top 20
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
@@ -101,6 +105,7 @@ easy-qfnu jwxt login --save-credentials yes  # use arguments, environment, or sa
 easy-qfnu jwxt logout  # clear the session; preserve credentials
 easy-qfnu jwxt logout --forget-credentials  # clear session and credentials
 easy-qfnu jwxt forget-credentials  # clear saved credentials only
+easy-qfnu jwxt relay recommendation  # stdin JSON after confirmation; requires login
 ```
 
 When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.
@@ -111,4 +116,4 @@ A captcha error means only that the current reading does not match. Run `jwxt ca
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search and public pre-course queries require their respective read-only services. Pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search, public pre-course queries, and public recommendation queries require their respective read-only services. Pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result. Recommendation search never sends a teaching-system session.

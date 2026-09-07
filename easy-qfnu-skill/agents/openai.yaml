@@ -1,7 +1,7 @@
 interface:
   display_name: "曲奇教务skill"
-  short_description: "Query QFNU notices, pre-course data, freshman questions, grades, and teaching-system session"
-  default_prompt: "Use $easy-qfnu-skill to search public pre-course data, the QFNU freshman question bank, or the latest academic-affairs notices."
+  short_description: "Query QFNU notices, pre-course data, teacher recommendations, freshman questions, grades, and teaching-system session"
+  default_prompt: "Use $easy-qfnu-skill to search public pre-course data, public teacher recommendations, the QFNU freshman question bank, or the latest academic-affairs notices."
   brand_color: "#1F4E79"
 
 policy:

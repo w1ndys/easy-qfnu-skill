@@ -4,7 +4,7 @@ Base: `http://zhjw.qfnu.edu.cn/`
 
 Product: Qiangzhi (`强智`) `jsxsd`
 
-Current coverage: login, session, student profile, course grades, semester schedule, and explicitly confirmed student evaluations. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`.
+Current coverage: login, session, student profile, course grades, semester schedule, explicitly confirmed student evaluations, and explicitly confirmed course/teacher recommendation submission. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`.
 
 ## Authentication
 
@@ -70,6 +70,7 @@ easy-qfnu jwxt status
 easy-qfnu jwxt logout                         # clear the session; preserve credentials
 easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
 easy-qfnu jwxt forget-credentials            # clear saved credentials only
+easy-qfnu jwxt relay recommendation          # stdin JSON after confirmation; requires login
 ```
 
 JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `error`, and optionally `hint`.
@@ -170,8 +171,27 @@ Useful read-only `data-url` values, all prefixed with `/jsxsd`:
 | Program plan and completion (`培养方案及完成情况`) | `/pyfa/topyfamx` |
 | Academic calendar (`教学周历查看`) | `/jxzl/jxzl_query` |
 
-Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` flow: deferred-exam requests, make-up exam registration, actual course selection (`/jsxsd/xsxk/xklc_list`), preselection or any other enrollment action, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`). The separate public `precourse` catalog query is read-only and does not authorize any of these actions.
+Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` flows: deferred-exam requests, make-up exam registration, actual course selection (`/jsxsd/xsxk/xklc_list`), preselection or any other enrollment action, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`). The separate public `precourse` catalog query and `recommendation search` are read-only and do not authorize any of these actions.
+
+## Course and teacher recommendation submission
+
+Querying public recommendations does not use JWXT; run `recommendation search` as documented in `references/recommendations.md`. After a successful `jwxt grades` response, ask whether the user wants those public teacher recommendations; if they agree, search by course name and never invent a result.
+
+Submitting a recommendation requires a logged-in JWXT session. Draft JSON from the user's words:
+
+```json
+{"course_name":"...","teacher_name":"...","year":"...","reason":"...","nickname":null}
+```
+
+`year` is the academic year, not a semester code. Normalize whitespace, show the cleaned text, and wait for explicit confirmation in the current conversation. Nickname is public data; if the user does not agree to publish one, keep `"nickname": null`. Never invent a nickname.
+
+```bash
+printf '%s' '{"course_name":"...","teacher_name":"...","year":"...","reason":"...","nickname":null}' \
+  | easy-qfnu jwxt relay recommendation
+```
+
+Do not submit without confirmation. Do not offer a delete command.
 
 ## Out of scope
 
-Course selection, preselection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. The public `precourse` catalog is a separate read-only snapshot query. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.
+Course selection, preselection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` commands are prohibited. The public `precourse` catalog and `recommendation search` are separate read-only queries. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.
