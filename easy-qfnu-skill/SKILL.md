@@ -13,23 +13,11 @@ Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation subm
 
 > **Development status**: This skill is under rapid development. Features, commands, and supported scopes may change frequently; pay attention to update notices when using it.
 
-## CLI binary
+## CLI
 
-The skill delegates network operations to the prebuilt `easy-qfnu` CLI. Users only need a release binary from the [latest Releases](https://github.com/w1ndys/easy-qfnu-skill/releases/latest).
+The skill ships a standard-library Python CLI. Run `./scripts/easy-qfnu` from this skill directory. It needs Python 3 on `PATH` and does not install packages, download a binary, or require `PATH` changes. The local version is the `VERSION` file next to this `SKILL.md`.
 
-Install explicitly from the skill directory:
-
-```bash
-./scripts/install-easy-qfnu
-```
-
-The installer tries the `gh-proxy.com` acceleration mirror first, using URLs in this form:
-
-```text
-https://gh-proxy.com/https://github.com/w1ndys/easy-qfnu-skill/releases/latest/download/<asset>
-```
-
-If the mirror is unavailable, it falls back to the official GitHub Release URL. It verifies `checksums.txt` before installing and always writes the platform binary under `./bin/`, next to this `SKILL.md`. It never installs the CLI into `~/.local/bin` or another home-directory path. Run `./scripts/easy-qfnu` from this skill directory; it uses the verified binary in `./bin/` and does not require `PATH`. `QFNU_CLI_BIN` is reserved for explicit development or diagnostic overrides. If the local binary is unavailable, stop and ask the user to run the installer rather than reconstructing the implementation or handwritten HTTP requests.
+If `python3` is missing, stop and ask the user to install Python 3. Do not reconstruct the implementation, handwritten HTTP, or a Go binary.
 
 Current coverage:
 
@@ -55,11 +43,10 @@ Library-seat queries are not implemented yet.
 1. Before the first request in every conversation, read the latest public Release/Tag, update this skill to that Release/Tag, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
 3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, JWXT account/session data, or student evaluation.
-4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory update check against the latest public Release manifest; the Release tag is the single version source.
-5. If the CLI returns `update_required: true`, stop immediately. Complete every update listed in `updates`, reread the updated `SKILL.md`, and retry the original request.
-6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords to the user.
-7. Stop on `ok: false`. Show `error` and `hint`. Read `upstream` when present. Do not invent another scraping path.
-8. If the JSON is `ok: true` but the data is clearly abnormal, rerun the same command **once** with `--debug` and inspect `upstream.body` / `exchanges`. Do not use `--debug` on every request.
+4. Run `scripts/easy-qfnu` from this skill directory.
+5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords to the user.
+6. Stop on `ok: false`. Show `error` and `hint`. Read `upstream` when present. Do not invent another scraping path.
+7. If the JSON is `ok: true` but the data is clearly abnormal, rerun the same command **once** with `--debug` and inspect `upstream.body` / `exchanges`. Do not use `--debug` on every request.
 
 ## Update check
 

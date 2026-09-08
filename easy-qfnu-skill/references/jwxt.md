@@ -21,7 +21,7 @@ Login uses 6 sequential steps on **one Cookie jar**:
 
 Password errors stop immediately. Captcha errors restart from step 1, for at most 3 rounds. This applies both to OCR login and to the agent repeating the manual `captcha` + `login --captcha` pair. Retry network 5xx, 429, and timeout failures up to 3 times with a 1-second delay. If the site says the account is logged in elsewhere, stop; automatic status recovery never retries that case.
 
-`encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. The encoding is implemented inside the released Go binary.
+`encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. The encoding is implemented inside the Python CLI.
 
 ### Captcha: model vision first
 

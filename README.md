@@ -15,6 +15,7 @@ Current coverage:
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
 - Public read-only pre-course catalog and schedule queries (no JWXT login)
+- Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
 
 Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions and recommendation submissions; it never performs course selection or preselection (`选课`/`预选课`).
@@ -24,28 +25,29 @@ Library-seat queries are planned. The CLI is query-only except for explicitly co
 ```text
 easy-qfnu-skill/
   SKILL.md
+  VERSION
   agents/openai.yaml
-  bin/                       # installer-managed CLI binary, not committed
-  scripts/easy-qfnu         # public launcher for the Go CLI
-  scripts/install-easy-qfnu # explicit binary installer
-  releases/README.md        # release and checksum policy
+  python/                    # standard-library CLI
+  scripts/easy-qfnu         # public Python launcher
+  releases/README.md        # release tag policy
   references/jwc.md
   references/jwxt.md
+  references/freshman.md
   references/precourses.md
   references/recommendations.md
 ```
 
 ## Setup
 
-Install the prebuilt Go CLI for your platform from the [latest release](https://github.com/w1ndys/easy-qfnu-skill/releases/latest). The installer tries the `gh-proxy.com` acceleration mirror first and falls back to the official GitHub Release URL if the mirror is unavailable. It verifies `checksums.txt` before installation. From the repository root, run the explicit installer:
+Requires Python 3. The CLI is standard-library Python shipped with the skill; there is no platform binary, pip install, or `PATH` change. From the repository root:
 
 ```bash
-./easy-qfnu-skill/scripts/install-easy-qfnu
+./easy-qfnu-skill/scripts/easy-qfnu version
 ```
 
-The installer always writes the CLI under `easy-qfnu-skill/bin/`; it never installs to `~/.local/bin` or another home-directory path, and it does not require adding anything to `PATH`. Use `easy-qfnu-skill/scripts/easy-qfnu` to invoke the skill-local binary. `QFNU_CLI_BIN` is only an explicit development or diagnostic override.
+If `python3` is missing, install Python 3 and retry. Do not download a Go binary.
 
-每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `easy-qfnu-skill/SKILL.md`。CLI 启动时读取 Release 的 `manifest.json`，以 Release 标签作为 Release、CLI 和 skill 的统一版本来源；如果返回 `update_required: true`，必须完成提示中的 CLI 更新后再重试。
+每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `easy-qfnu-skill/SKILL.md`。本地版本来自 skill 目录的 `VERSION` 文件。
 
 Qiangzhi login uses model vision by default and requires no extra package:
 
