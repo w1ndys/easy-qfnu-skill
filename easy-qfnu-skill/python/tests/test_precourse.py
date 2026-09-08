@@ -69,7 +69,7 @@ class PrecourseTest(unittest.TestCase):
         server = start_server()
         try:
             port = server.server_address[1]
-            precourse.endpoint = "http://127.0.0.1:" + str(port) + "/v1/precourses"
+            precourse.endpoint = "http://127.0.0.1:" + str(port) + "/v1/precourse"
             out = io.StringIO()
             code = precourse.run_precourse_search(
                 ["音乐鉴赏", "--campus", "日照", "--teacher-name", "王老师"],
@@ -80,7 +80,7 @@ class PrecourseTest(unittest.TestCase):
         self.assertEqual(code, 0)
         parsed = urlparse(SERVER_STATE["paths"][0])
         query = parse_qs(parsed.query)
-        self.assertEqual(parsed.path, "/v1/precourses/search")
+        self.assertEqual(parsed.path, "/v1/precourse/search")
         self.assertEqual(query.get("q"), ["音乐鉴赏"])
         self.assertEqual(query.get("campus"), ["日照"])
         self.assertEqual(query.get("teacherName"), ["王老师"])
@@ -98,7 +98,7 @@ class PrecourseTest(unittest.TestCase):
         server = start_server()
         try:
             port = server.server_address[1]
-            precourse.endpoint = "http://127.0.0.1:" + str(port) + "/v1/precourses"
+            precourse.endpoint = "http://127.0.0.1:" + str(port) + "/v1/precourse"
             out = io.StringIO()
             self.assertEqual(precourse.run_precourse(["meta"], out), 0)
             out = io.StringIO()
@@ -110,9 +110,9 @@ class PrecourseTest(unittest.TestCase):
         self.assertEqual(
             SERVER_STATE["paths"],
             [
-                "/v1/precourses/meta",
-                "/v1/precourses/popular?field=college",
-                "/v1/precourses/search?q=%E9%9F%B3%E4%B9%90",
+                "/v1/precourse/meta",
+                "/v1/precourse/popular?field=college",
+                "/v1/precourse/search?q=%E9%9F%B3%E4%B9%90",
             ],
         )
         self.assertEqual(events, ["meta:success", "popular:success", "search:success"])

@@ -9,7 +9,7 @@ from . import telemetry
 from .result import failure, success, write_json
 from .version import VERSION
 
-DEFAULT_ENDPOINT = "https://precourse.easy-qfnu.top/v1/precourses"
+DEFAULT_ENDPOINT = "https://precourse.easy-qfnu.top/v1/precourse"
 REQUEST_TIMEOUT = 30
 endpoint = DEFAULT_ENDPOINT
 
