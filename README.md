@@ -89,6 +89,8 @@ easy-qfnu precourse search "音乐鉴赏"
 easy-qfnu precourse search --teacher-name "王" --campus "日照"
 easy-qfnu precourse meta
 easy-qfnu precourse popular --field teacherName
+easy-qfnu jwxt xk rounds
+easy-qfnu jwxt xk search --course "音乐鉴赏"
 easy-qfnu recommendation search --course "高等数学"
 easy-qfnu recommendation search --teacher "张" --top 20
 
@@ -116,4 +118,4 @@ A captcha error means only that the current reading does not match. Run `jwxt ca
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search, public pre-course queries, and public recommendation queries require their respective read-only services. Pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result. Recommendation search never sends a teaching-system session.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search, public pre-course queries, and public recommendation queries require their respective read-only services. Cached pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result. While a selection round is open, `jwxt xk search` is the live catalog: it is more timely, requires login, and `located_modules` tells which selection module actually contains the course (the official webpage may hide modules by grade). Neither command submits enrollment. Recommendation search never sends a teaching-system session.

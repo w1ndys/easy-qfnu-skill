@@ -1,6 +1,6 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public pre-course schedules, public course/teacher recommendations, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, public pre-course data, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or course-selection actions.
+description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions.
 ---
 
 # easy-qfnu-skill (曲奇教务skill)
@@ -37,7 +37,8 @@ Current coverage:
 - Read-only JWXT course-grade queries
 - Read-only JWXT semester-schedule queries
 - JWXT student-evaluation preview and explicitly confirmed submission
-- Public read-only pre-course catalog and schedule queries (no JWXT login)
+- Public read-only cached pre-course catalog queries (no JWXT login)
+- Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
 
 Library-seat queries are not implemented yet.
@@ -82,6 +83,9 @@ easy-qfnu precourse search "音乐鉴赏"
 easy-qfnu precourse search --teacher-name "王" --campus "日照"
 easy-qfnu precourse meta
 easy-qfnu precourse popular --field teacherName
+easy-qfnu jwxt xk rounds
+easy-qfnu jwxt xk search --course "音乐鉴赏"
+easy-qfnu jwxt xk search --teacher "王" --module 公选课
 easy-qfnu recommendation search --course "高等数学"
 easy-qfnu recommendation search --teacher "张" --top 20
 
@@ -109,7 +113,8 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
 - Requests such as “有没有选课/考试/教材通知”: run `jwc search "<keyword>"`, then `jwc get` for the best match when the user needs dates, steps, or attachments.
 - One known article: run `jwc get` with the official URL or `info/<category>/<id>.htm`.
 - Freshman entrance-exam questions: run `freshman search "<keyword>"`; answer from each item's question, options, and answer. Use `--page` and `--page-size` for pagination.
-- Public pre-course data: run `precourse search [keyword]` with optional field filters; no JWXT login is needed. Use `precourse meta` when the data update time matters, and report that the source is a scheduled snapshot with a maximum of 500 results.
+- Cached pre-course data: run `precourse search [keyword]` with optional field filters; no JWXT login is needed. Use `precourse meta` when the data update time matters, and report that this is a scheduled snapshot (可能滞后), not the live enrollment database. Maximum 500 results.
+- Live pre-course/course-selection catalog: when the user wants current remaining seats, whether a course is in this round, or which selection module it lives in, first ensure JWXT login, then run `jwxt xk rounds` and `jwxt xk search --course "<name or code>"` and/or `--teacher "<name>"`. Always tell the user this is 即时查询, more accurate than the cached catalog, and only available while a round is open. Default search scans every module; `located_modules` is the probed module list (网页可能因年级隐藏这些入口，API 不受该限制). Never call a selection/submit URL. If no round is open, say so and offer `precourse search` as the cached fallback.
 - Public course/teacher recommendations: run `recommendation search --course "<course>"` and/or `--teacher "<teacher>"`. At least one non-empty flag is required. `--top` defaults to 20 and is capped at 100. No JWXT login. If `count` is 0 or `items` is empty, say there is no public recommendation; never invent a review or score.
 - Submit a course/teacher recommendation: requires a logged-in JWXT session. Draft `course_name`, `teacher_name`, `year`, `reason`, and `nickname` from the user's words (`year` is the academic year, not a semester code). Clean the text, show it to the user, and wait for explicit confirmation in the current conversation. Nickname is public data; if the user does not agree to publish one, set `"nickname": null`. Then pipe the JSON to `jwxt relay recommendation`. Do not submit without confirmation. Users cannot delete a recommendation through this skill.
 - Quote deadlines and attachments from article JSON, not from memory.
@@ -127,15 +132,16 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
   3. If deploying or accessing the independent service encounters network errors, do not retry repeatedly. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
   Never invent or guess captcha text. Never print the password.
 - A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
-- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Actual course selection or preselection remains prohibited; the separate public pre-course catalog query and public recommendation query are read-only and do not submit enrollment actions.
+- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Actual course selection or preselection remains prohibited. The cached public pre-course catalog, the live `jwxt xk` catalog, and public recommendation search are read-only and do not submit enrollment actions.
 
 ## Constraints
 
 - JWC is public and requires no login.
 - The freshman question bank is a public, read-only search API. Call only `GET https://freshman-exam.easy-qfnu.top/api/questions`; never upload answers or modify the bank.
-- The public pre-course catalog is read-only and requires no JWXT login. Use the CLI command only, never request or expose an upstream API key; provide at least one non-empty condition and do not imply that snapshot data is a real-time enrollment result.
+- The public cached pre-course catalog is read-only and requires no JWXT login. Use the CLI command only, never request or expose an upstream API key; provide at least one non-empty condition and always say it is a scheduled snapshot, not live enrollment data.
+- Live `jwxt xk` catalog queries require a JWXT session and an open selection round. They are more timely than the cached catalog. Default search scans all modules so you can tell the user which module contains the target course, even if the official webpage hides that module for the current grade. Read `located_modules` and state it in Chinese. Never enter a select/submit endpoint (`*Oper`, `kcid`, `jx0404id`). If the CLI returns no open round, fall back to cached `precourse search` and say so.
 - Public course/teacher recommendation search is read-only and requires no JWXT login. Use the CLI command only; never send a teaching-system session with the query; never invent a review when the result is empty.
-- After JWXT login, operations are read-only by default. Refuse actual course selection, preselection, and all other business forms except the explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` flows. The public pre-course catalog and recommendation search never authorize or perform selection.
+- After JWXT login, operations are read-only by default. Refuse actual course selection, preselection, and all other business forms except the explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` flows. Cached `precourse` queries, live `jwxt xk` queries, and recommendation search never authorize or perform selection.
 - Do not copy the legacy project's “先用 89 分清除系统限制” or similar restriction-bypass workflow. Submit each pending course at most once per command. Never automatically retry an evaluation POST; if the response is ambiguous, stop and tell the user to verify the official teaching-system page.
 - Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn`, `zhjw.qfnu.edu.cn`, the public pre-course service, or the public recommendation query, request network access and retry once.
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.

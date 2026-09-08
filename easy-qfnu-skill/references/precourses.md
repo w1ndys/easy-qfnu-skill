@@ -1,6 +1,13 @@
 # Public pre-course catalog
 
-The pre-course catalog is a public, read-only snapshot. It does not require a JWXT session and it cannot select or preselect a course.
+The public pre-course catalog is a **cached, read-only snapshot**. It does not require a JWXT session and it cannot select or preselect a course.
+
+There is a separate **live** catalog: `easy-qfnu jwxt xk search`. That command needs a logged-in JWXT session and an open course-selection round. Always tell the user which one you used:
+
+- `precourse search` = 缓存预选课查询，定时快照，可能滞后，不必登录
+- `jwxt xk search` = 即时查询，当前轮次教务库，更准确及时，能探测课程所在选课模块；网页可能按年级隐藏模块，该查询不受此限制。只读，不会选课
+
+If no round is open, say 即时查询不可用 and use this cached catalog.
 
 ## CLI
 

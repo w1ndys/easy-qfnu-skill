@@ -4,7 +4,7 @@ Base: `http://zhjw.qfnu.edu.cn/`
 
 Product: Qiangzhi (`强智`) `jsxsd`
 
-Current coverage: login, session, student profile, course grades, semester schedule, explicitly confirmed student evaluations, and explicitly confirmed course/teacher recommendation submission. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`.
+Current coverage: login, session, student profile, course grades, semester schedule, live read-only course-selection catalog search during an open round, explicitly confirmed student evaluations, and explicitly confirmed course/teacher recommendation submission. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`. Never submit a course-selection action.
 
 ## Authentication
 
@@ -71,9 +71,13 @@ easy-qfnu jwxt logout                         # clear the session; preserve cred
 easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
 easy-qfnu jwxt forget-credentials            # clear saved credentials only
 easy-qfnu jwxt relay recommendation          # stdin JSON after confirmation; requires login
+easy-qfnu jwxt xk rounds                     # list open selection rounds
+easy-qfnu jwxt xk search --course "音乐鉴赏"  # live catalog; probes every module by default
 ```
 
 JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `error`, and optionally `hint`.
+
+`jwxt xk rounds` lists open selection rounds. `jwxt xk search` is the live catalog: it enters the round, scans selection modules (default: all five), and returns remaining seats, teachers, times, and `located_modules` (which module actually contains the course). Tell the user this is 即时查询, more accurate than `precourse search`, and that the official webpage may hide modules by grade while this query does not. If several rounds are open, pass `--round`. If none are open, stop and offer cached `precourse search`. Never reconstruct a select/submit request.
 
 `jwxt status` and successful `jwxt login` also return `profile`:
 
@@ -129,7 +133,7 @@ All paths are under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. The C
 | Semester schedule (`学期理论课表`) | `/jsxsd/xskb/xskb_list.do` | Read-only GET. Parameters: `xnxq01id` (semester), `zc` (week; empty means all), `sfFD=1`, optional `kbjcmsid` (period scheme). Cells are in `#kbtable` / `.kbcontent`. CLI: `jwxt schedule --semester <semester> [--week <week>]`. |
 | Today's homepage schedule fragment (`首页当日课表`) | `/jsxsd/framework/main_index_loadkb.jsp?rq=YYYY-MM-DD` | Loaded by `xsMain_new` using jQuery `.load`; optional `sjmsValue`. |
 | Exam arrangements (`考试安排查询`) | `/jsxsd/xsks/xsksap_query` | GET 200 |
-| Course-selection center (`学生选课中心`) | `/jsxsd/xsxk/xklc_list` | Read-only inspection of rounds only. Never enter a round and submit a selection. |
+| Course-selection center (`学生选课中心`) | `/jsxsd/xsxk/xklc_list` | CLI `jwxt xk rounds` lists open rounds. `jwxt xk search` enters a round only to query course JSON; never call `*Oper` selection URLs. |
 | Course-selection results (`选课结果查询`) | `/jsxsd/xkgl/xsxkjgcx` | GET 200 |
 | Academic calendar (`教学周历`) | `/jsxsd/jxzl/jxzl_query` | GET 200 |
 | Program plan and completion (`培养方案及完成情况`) | `/jsxsd/pyfa/topyfamx` | GET 200; large page |
@@ -171,7 +175,7 @@ Useful read-only `data-url` values, all prefixed with `/jsxsd`:
 | Program plan and completion (`培养方案及完成情况`) | `/pyfa/topyfamx` |
 | Academic calendar (`教学周历查看`) | `/jxzl/jxzl_query` |
 
-Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` flows: deferred-exam requests, make-up exam registration, actual course selection (`/jsxsd/xsxk/xklc_list`), preselection or any other enrollment action, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`). The separate public `precourse` catalog query and `recommendation search` are read-only and do not authorize any of these actions.
+Never submit write or application workflows exposed by the menu except the dedicated, explicitly confirmed `jwxt evaluate` and `jwxt relay recommendation` flows: deferred-exam requests, make-up exam registration, actual course selection (`*Oper` / `kcid` / `jx0404id`), preselection or any other enrollment action, textbook confirmation, minor enrollment/withdrawal, lab reservation, innovation-credit application, thesis uploads, major-change requests, personal-information saves, or student-status edits (`toEditxsxx.do`). `jwxt xk` may enter an open round only to search the catalog JSON; it does not authorize selection. Cached `precourse` queries and `recommendation search` are also read-only.
 
 ## Course and teacher recommendation submission
 
