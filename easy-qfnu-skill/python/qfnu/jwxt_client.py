@@ -249,6 +249,13 @@ class JWXTClient:
     def has_origin_cookies(self):
         return len(cookies_for_url(self.jar, JWXT_BASE + "/")) > 0
 
+    def cookie_header(self):
+        values = []
+        for cookie in cookies_for_url(self.jar, JWXT_BASE + "/"):
+            if cookie.name.strip() != "":
+                values.append(cookie.name + "=" + cookie.value)
+        return "; ".join(values)
+
     def request(self, method, target, body=None, headers=None, same_origin=False):
         origin = JWXT_BASE if same_origin else ""
         return self.request_with_origin(method, target, body, headers, origin)

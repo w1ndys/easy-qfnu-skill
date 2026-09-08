@@ -1,6 +1,7 @@
-"""教务命令：验证码、登录、成绩、课表、评价、选课查询、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、评价、选课查询、中继、状态、退出和忘记凭据。"""
 
 import os
+import sys
 
 from . import telemetry
 from .jwxt_auth import (
@@ -14,6 +15,7 @@ from .jwxt_auth import (
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
 from .jwxt_evaluation import evaluate, evaluations
 from .jwxt_grades import grades
+from .jwxt_relay import run_jwxt_relay_command
 from .jwxt_schedule import schedule
 from .jwxt_xk import run_jwxt_xk
 from .result import failure, success, write_json
@@ -21,9 +23,13 @@ from .result import failure, success, write_json
 USAGE_ACTIONS = ("grades", "schedule", "evaluations", "evaluate")
 
 
-def run_jwxt(args, out):
+def run_jwxt(args, out, inp=None):
+    if inp is None:
+        inp = sys.stdin
     if len(args) == 0 or args[0] == "--help":
         return usage_jwxt(out)
+    if args[0] == "relay":
+        return run_jwxt_relay_command(args, out, inp)
     if args[0] == "xk":
         return run_jwxt_xk(args[1:], out)
     if args[0] == "forget-credentials":
@@ -56,7 +62,7 @@ def run_jwxt(args, out):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|evaluations|evaluate|status|logout|forget-credentials|xk>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|evaluations|evaluate|status|logout|forget-credentials|relay|xk>\n"
         )
     except OSError:
         return 1
