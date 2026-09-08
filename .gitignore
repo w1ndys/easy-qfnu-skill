@@ -3,7 +3,8 @@ __pycache__/
 .DS_Store
 .venv/
 venv/
-easy-qfnu-skill/ocr/.venv/
+.ruff_cache/
+ocr/.venv/
 jwxt-session.json
 course_recommendation_data.db
-easy-qfnu-skill/bin/
+bin/

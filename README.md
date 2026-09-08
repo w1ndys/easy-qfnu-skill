@@ -29,7 +29,6 @@ easy-qfnu-skill/
   agents/openai.yaml
   python/                    # standard-library CLI
   scripts/easy-qfnu         # public Python launcher
-  releases/README.md        # release tag policy
   references/jwc.md
   references/jwxt.md
   references/freshman.md
@@ -42,12 +41,12 @@ easy-qfnu-skill/
 Requires Python 3. The CLI is standard-library Python shipped with the skill; there is no platform binary, pip install, or `PATH` change. From the repository root:
 
 ```bash
-./easy-qfnu-skill/scripts/easy-qfnu version
+./scripts/easy-qfnu version
 ```
 
 If `python3` is missing, install Python 3 and retry. Do not download a Go binary.
 
-每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `easy-qfnu-skill/SKILL.md`。本地版本来自 skill 目录的 `VERSION` 文件。
+每次使用前先读取并更新到最新公开 Release/Tag，再重新读取 `SKILL.md`。本地版本来自仓库根目录的 `VERSION` 文件。
 
 Qiangzhi login uses model vision by default and requires no extra package:
 
