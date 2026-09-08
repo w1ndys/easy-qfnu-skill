@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、成绩、课表、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、评价、状态、退出和忘记凭据。"""
 
 import os
 
@@ -12,11 +12,12 @@ from .jwxt_auth import (
     status,
 )
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
+from .jwxt_evaluation import evaluate, evaluations
 from .jwxt_grades import grades
 from .jwxt_schedule import schedule
 from .result import failure, success, write_json
 
-USAGE_ACTIONS = ("grades", "schedule")
+USAGE_ACTIONS = ("grades", "schedule", "evaluations", "evaluate")
 
 
 def run_jwxt(args, out):
@@ -52,7 +53,7 @@ def run_jwxt(args, out):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|status|logout|forget-credentials>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|evaluations|evaluate|status|logout|forget-credentials>\n"
         )
     except OSError:
         return 1
@@ -71,6 +72,9 @@ def parse_jwxt_command(action, args):
         "semester": "",
         "week": "",
         "mode": "",
+        "score": 89,
+        "courses": [],
+        "confirm": False,
         "save": False,
         "save_set": False,
         "forget": False,
@@ -88,6 +92,9 @@ def parse_jwxt_command(action, args):
 
 def parse_option(command, args):
     arg = args[0]
+    if arg == "--confirm":
+        command["confirm"] = True
+        return 0
     if arg == "--forget-credentials" or arg == "--clear-credentials":
         command["forget"] = True
         return 0
@@ -123,6 +130,13 @@ def set_value_option(command, arg, value):
         command["week"] = value
     elif arg == "--kbjcmsid":
         command["mode"] = value
+    elif arg == "--score" or arg == "--target-score":
+        try:
+            command["score"] = int(value)
+        except ValueError:
+            raise ValueError(arg + " must be an integer") from None
+    elif arg == "--course":
+        command["courses"].extend(value.split(","))
     else:
         raise ValueError("unknown option: " + arg)
 
@@ -185,6 +199,10 @@ def execute_jwxt(client, command):
         return grades(client, command["semester"])
     if action == "schedule":
         return schedule(client, command["semester"], command["week"], command["mode"])
+    if action == "evaluations":
+        return evaluations(client)
+    if action == "evaluate":
+        return evaluate(client, command["score"], command["courses"], command["confirm"])
     raise JWXTError("unknown action: " + action)
 
 
