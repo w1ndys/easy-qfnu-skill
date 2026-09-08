@@ -5,6 +5,7 @@ import sys
 from .freshman import run_freshman
 from .jwc import run_jwc
 from .precourse import run_precourse
+from .recommendation import run_recommendation
 from .result import failure, success, write_json
 from .version import VERSION
 
@@ -12,7 +13,7 @@ from .version import VERSION
 def usage(out):
     """打印用法。写出失败返回 1，成功返回 2（与原 CLI 一致）。"""
     try:
-        out.write("Usage: easy-qfnu <jwc|freshman|precourse|version>\n")
+        out.write("Usage: easy-qfnu <jwc|freshman|precourse|recommendation|version>\n")
     except OSError:
         return 1
     return 2
@@ -31,6 +32,8 @@ def run(args, stdout, stderr):
         return run_freshman(args[1:], stdout)
     if args[0] == "precourse":
         return run_precourse(args[1:], stdout)
+    if args[0] == "recommendation":
+        return run_recommendation(args[1:], stdout)
     return write_json(
         stdout,
         failure("easy-qfnu", "unknown command: " + args[0], "run easy-qfnu --help"),
