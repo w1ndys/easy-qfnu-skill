@@ -5,6 +5,8 @@ description: Query QFNU academic-affairs notices, freshman entrance-exam questio
 
 # easy-qfnu-skill (曲奇小助手skill)
 
+本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
+
 Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation submission and recommendation submission are available only after an explicit confirmation gate. Prefer the CLI over handwritten HTTP.
 
 > **Technical support**: This skill is technically supported by the WeChat official account “曲奇味卷卷”. For suggestions or feedback, follow the account or join QQ group 2 `1087015770` (recommended). QQ group 1 `742726649` is nearly full.
