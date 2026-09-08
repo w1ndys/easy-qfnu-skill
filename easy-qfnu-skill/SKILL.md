@@ -3,7 +3,7 @@ name: easy-qfnu-skill
 description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions.
 ---
 
-# easy-qfnu-skill (曲奇教务skill)
+# easy-qfnu-skill (曲奇小助手skill)
 
 Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation submission and recommendation submission are available only after an explicit confirmation gate. Prefer the CLI over handwritten HTTP.
 

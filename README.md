@@ -1,4 +1,4 @@
-# easy-qfnu-skill (曲奇教务skill)
+# easy-qfnu-skill (曲奇小助手skill)
 
 A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission and recommendation submission are supported only after an explicit confirmation gate.
 
