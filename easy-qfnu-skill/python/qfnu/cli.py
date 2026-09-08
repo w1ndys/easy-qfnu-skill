@@ -2,6 +2,7 @@
 
 import sys
 
+from . import trace
 from .freshman import run_freshman
 from .jwc import run_jwc
 from .jwxt import run_jwxt
@@ -14,7 +15,7 @@ from .version import VERSION
 def usage(out):
     """打印用法。写出失败返回 1，成功返回 2（与原 CLI 一致）。"""
     try:
-        out.write("Usage: easy-qfnu <jwc|freshman|precourse|recommendation|jwxt|version>\n")
+        out.write("Usage: easy-qfnu [--debug] <jwc|freshman|precourse|recommendation|jwxt|version>\n")
     except OSError:
         return 1
     return 2
@@ -23,6 +24,8 @@ def usage(out):
 def run(args, stdout, stderr):
     """按参数分发命令。未知命令返回 JSON 失败。"""
     del stderr
+    debug, args = trace.take_debug_flag(args)
+    trace.reset(debug)
     if len(args) == 0 or args[0] == "--help" or args[0] == "help":
         return usage(stdout)
     if args[0] == "version" or args[0] == "--version":

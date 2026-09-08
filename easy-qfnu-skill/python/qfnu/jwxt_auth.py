@@ -7,6 +7,7 @@ import os
 import re
 from urllib.parse import urlencode
 
+from . import trace
 from .jwxt_client import (
     CAPTCHA_URL,
     JWXT_BASE,
@@ -102,6 +103,7 @@ def login_failure_hint(message):
 def validate_login_response(raw):
     message = parse_login_message(raw)
     if message:
+        trace.note("login showMsg")
         raise JWXTError(message, login_failure_hint(message))
     if contains_any(raw, ["密码错误", "用户名或密码错误", "用户名密码错误", "您提供的用户名或者密码有误"]):
         raise JWXTError(

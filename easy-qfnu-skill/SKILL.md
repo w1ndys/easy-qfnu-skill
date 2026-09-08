@@ -57,8 +57,9 @@ Library-seat queries are not implemented yet.
 3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, JWXT account/session data, or student evaluation.
 4. Run `scripts/easy-qfnu` from this skill directory. The CLI performs a mandatory update check against the latest public Release manifest; the Release tag is the single version source.
 5. If the CLI returns `update_required: true`, stop immediately. Complete every update listed in `updates`, reread the updated `SKILL.md`, and retry the original request.
-6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords.
-7. Stop on `ok: false`. Show `error` and `hint`; do not invent another scraping path.
+6. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords to the user.
+7. Stop on `ok: false`. Show `error` and `hint`. Read `upstream` when present. Do not invent another scraping path.
+8. If the JSON is `ok: true` but the data is clearly abnormal, rerun the same command **once** with `--debug` and inspect `upstream.body` / `exchanges`. Do not use `--debug` on every request.
 
 ## Update check
 
@@ -108,6 +109,25 @@ easy-qfnu jwxt relay recommendation          # stdin JSON after confirmation; re
 ```
 
 The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, `references/precourses.md` for the public pre-course query, and `references/recommendations.md` for public teacher recommendations.
+
+## Debug
+
+`--debug` (or `QFNU_DEBUG=1`) attaches the last upstream response even when `ok` is true, plus `exchanges` for the whole HTTP chain. Failures already include `upstream` without the flag.
+
+Use it only when the returned data looks wrong, for example:
+
+- empty `items` / `courses` / `grades` / `schedule` when the user expected records
+- schedule or list that is only headers, or HTML that looks like a login page
+- missing fields that the command normally returns
+- `ok: false` whose `error`/`hint` is not enough to explain the failure
+
+Rerun the original command once with the global flag before the subcommand:
+
+```bash
+easy-qfnu --debug jwxt schedule --semester 2025-2026-3 --week 1
+```
+
+Inspect `upstream.body` yourself. Do not paste the full raw body to the user unless they asked for debug details. Passwords, cookies, and `encoded` are already redacted. Do not reconstruct handwritten HTTP from the dump.
 
 ## How to answer
 

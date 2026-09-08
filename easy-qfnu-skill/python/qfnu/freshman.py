@@ -1,11 +1,10 @@
 """新生入学考试题库检索。公开只读接口，不登录、不改题。"""
 
 import json
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from . import telemetry
+from . import telemetry, trace
 from .result import failure, write_json
 
 FRESHMAN_API = "https://freshman-exam.easy-qfnu.top/api/questions"
@@ -96,6 +95,7 @@ def parse_freshman_body(raw, target):
     try:
         upstream = json.loads(raw)
     except (TypeError, ValueError) as exc:
+        trace.note("invalid JSON")
         raise FreshmanError(
             "invalid question-bank response",
             "请联系维护者并提供接口响应状态",
@@ -110,26 +110,8 @@ def parse_freshman_body(raw, target):
 
 def get_json_body(target):
     request = Request(target, method="GET")
-    try:
-        response = urlopen(request, timeout=REQUEST_TIMEOUT)
-    except HTTPError as exc:
-        return read_http_error(exc)
-    except URLError as exc:
-        raise OSError(str(exc.reason)) from exc
-    try:
-        data = response.read()
-        status = response.getcode() or 0
-    finally:
-        response.close()
+    data, status, _final = trace.fetch(request, REQUEST_TIMEOUT)
     return data.decode("utf-8", errors="replace"), status
-
-
-def read_http_error(exc):
-    try:
-        exc.read()
-    except OSError as read_err:
-        raise OSError("failed to read question-bank response") from read_err
-    return "", exc.code
 
 
 def run_freshman(args, out):

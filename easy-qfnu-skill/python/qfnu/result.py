@@ -2,9 +2,12 @@
 
 import json
 
+from . import trace
+
 
 def write_json(out, value):
     """把对象写成缩进 JSON 并换行。写出失败返回 1，成功返回 0。"""
+    trace.attach(value)
     try:
         data = json.dumps(value, ensure_ascii=False, indent=2)
     except (TypeError, ValueError):

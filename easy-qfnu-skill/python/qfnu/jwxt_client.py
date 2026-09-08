@@ -2,11 +2,14 @@
 
 import json
 import os
+import urllib.error
 import urllib.request
 import urllib.response
 from datetime import datetime, timezone
 from http.cookiejar import Cookie, CookieJar
 from urllib.parse import urljoin, urlparse
+
+from . import trace
 
 JWXT_BASE = "http://zhjw.qfnu.edu.cn"
 CAPTCHA_URL = JWXT_BASE + "/verifycode.servlet"
@@ -257,13 +260,18 @@ class JWXTClient:
         request.add_header("User-Agent", USER_AGENT)
         for key, value in (headers or {}).items():
             request.add_header(key, value)
-        response = opener.open(request, timeout=REQUEST_TIMEOUT)
+        try:
+            response = opener.open(request, timeout=REQUEST_TIMEOUT)
+        except urllib.error.URLError as exc:
+            trace.record(method, target, 0, "", "network error: " + str(exc.reason), body)
+            raise OSError(str(exc.reason)) from exc
         try:
             data = response.read()
             status = getattr(response, "status", None) or response.getcode() or 0
             final_url = response.geturl() or target
         finally:
             response.close()
+        trace.record(method, final_url, status, data, "", body)
         return status, final_url, data
 
     def text(self, method, target, body=None, headers=None, same_origin=False):

@@ -3,11 +3,10 @@
 import base64
 import html
 import re
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from . import telemetry
+from . import telemetry, trace
 from .result import failure, success, write_json
 
 JWC_BASE = "https://jwc.qfnu.edu.cn"
@@ -395,18 +394,7 @@ def request_jwc(method, target, body, headers):
     if headers:
         for key in headers:
             request.add_header(key, headers[key])
-    try:
-        response = urlopen(request, timeout=REQUEST_TIMEOUT)
-    except HTTPError as exc:
-        raise OSError("HTTP " + str(exc.code)) from exc
-    except URLError as exc:
-        raise OSError(str(exc.reason)) from exc
-    try:
-        data = response.read()
-        status = response.getcode() or 0
-        final_url = response.geturl()
-    finally:
-        response.close()
+    data, status, final_url = trace.fetch(request, REQUEST_TIMEOUT)
     if status < 200 or status >= 300:
         raise OSError("HTTP " + str(status))
     return data.decode("utf-8", errors="replace"), final_url

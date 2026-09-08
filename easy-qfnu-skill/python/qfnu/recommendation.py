@@ -1,11 +1,10 @@
 """公开选课推荐查询。不登录教务系统，不提交评价。"""
 
 import json
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from . import telemetry
+from . import telemetry, trace
 from .result import failure, success, write_json
 from .version import VERSION
 
@@ -164,6 +163,7 @@ def decode_body(raw, status, target):
     try:
         body = json.loads(raw)
     except (TypeError, ValueError) as exc:
+        trace.note("invalid JSON")
         raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试", True) from exc
     if not isinstance(body, dict):
         raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试", True)
@@ -171,26 +171,8 @@ def decode_body(raw, status, target):
 
 
 def read_response(request):
-    try:
-        response = urlopen(request, timeout=REQUEST_TIMEOUT)
-    except HTTPError as exc:
-        return read_http_error(exc)
-    except URLError as exc:
-        raise OSError(str(exc.reason)) from exc
-    try:
-        data = response.read()
-        status = response.getcode() or 0
-    finally:
-        response.close()
+    data, status, _final = trace.fetch(request, REQUEST_TIMEOUT)
     return data.decode("utf-8", errors="replace"), status
-
-
-def read_http_error(exc):
-    try:
-        data = exc.read()
-    except OSError as read_err:
-        raise OSError("failed to read recommendation response") from read_err
-    return data.decode("utf-8", errors="replace"), exc.code
 
 
 def write_recommendation_failure(out, message, hint):
