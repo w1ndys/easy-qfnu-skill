@@ -7,7 +7,7 @@ description: Query QFNU academic-affairs notices, freshman entrance-exam questio
 
 Helpers for QFNU campus systems. Queries are read-only; teaching-evaluation submission and recommendation submission are available only after an explicit confirmation gate. Prefer the CLI over handwritten HTTP.
 
-> **Technical support**: This skill is technically supported by the WeChat official account “曲奇味卷卷”. For suggestions or feedback, follow the account or join QQ group `742726649`.
+> **Technical support**: This skill is technically supported by the WeChat official account “曲奇味卷卷”. For suggestions or feedback, follow the account or join QQ group 2 `1087015770` (recommended). QQ group 1 `742726649` is nearly full.
 
 > **Development status**: This skill is under rapid development. Features, commands, and supported scopes may change frequently; pay attention to update notices when using it.
 
