@@ -1,15 +1,13 @@
 """只读课程成绩。GET /jsxsd/kscj/cjcx_list，不提交表单。"""
 
-import re
 from urllib.parse import urlencode
 
 from . import trace
-from .jwxt_auth import contains_any, strip_tags
+from .jwxt_auth import contains_any
 from .jwxt_client import GRADE_URL, JWXTError
+from .jwxt_html import LOGIN_MARKERS, parse_table
 from .result import success
 
-ROW_RE = re.compile(r"(?is)<tr\b[^>]*>(.*?)</tr\s*>")
-CELL_RE = re.compile(r"(?is)<(?:td|th)\b[^>]*>(.*?)</(?:td|th)\s*>")
 GRADE_HEADERS = {
     "开课学期": "semester",
     "课程编号": "course_id",
@@ -27,16 +25,6 @@ GRADE_HEADERS = {
     "课程性质": "course_nature",
     "课程类别": "course_category",
 }
-LOGIN_MARKERS = ["请输入账号", "请输入密码", "请输入验证码"]
-
-
-def parse_table(raw):
-    rows = []
-    for row in ROW_RE.findall(raw):
-        cells = [strip_tags(cell) for cell in CELL_RE.findall(row)]
-        if cells:
-            rows.append(cells)
-    return rows
 
 
 def grade_item(headers, row, semester):

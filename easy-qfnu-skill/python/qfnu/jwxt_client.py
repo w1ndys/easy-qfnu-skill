@@ -18,6 +18,7 @@ LOGIN_URL = JWXT_BASE + "/Logon.do?method=logonLdap"
 MAIN_URL = JWXT_BASE + "/jsxsd/framework/xsMain.jsp"
 PROFILE_URL = JWXT_BASE + "/jsxsd/framework/xsMain_new.jsp?t1=1"
 GRADE_URL = JWXT_BASE + "/jsxsd/kscj/cjcx_list"
+SCHEDULE_URL = JWXT_BASE + "/jsxsd/xskb/xskb_list.do"
 REQUEST_TIMEOUT = 30
 USER_AGENT = "easy-qfnu-skill/easy-qfnu"
 ZERO_EXPIRES = "0001-01-01T00:00:00Z"

@@ -13,6 +13,7 @@ from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_m
 from qfnu.jwxt_auth import status as jwxt_status
 from qfnu.jwxt_client import JWXT_BASE, JWXTClient, cookies_for_url, make_cookie
 from qfnu.jwxt_grades import grades, parse_grades
+from qfnu.jwxt_schedule import parse_schedule, schedule, schedule_url
 
 
 class JWXTAuthTest(unittest.TestCase):
@@ -74,11 +75,11 @@ class JWXTAuthTest(unittest.TestCase):
 
     def test_cli_dispatches_jwxt_and_rejects_unknown_action(self):
         out = io.StringIO()
-        code = run(["jwxt", "schedule"], out, io.StringIO())
+        code = run(["jwxt", "evaluations"], out, io.StringIO())
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
-        self.assertIn("unknown action: schedule", body["error"])
+        self.assertIn("unknown action: evaluations", body["error"])
 
     def test_status_keeps_login_when_profile_enrichment_fails(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -224,6 +225,102 @@ class JWXTGradesTest(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "grades page requires login")
         self.assertEqual(events, [("jwxt.grades", "failure")])
+
+
+SCHEDULE_TABLE = """
+<table id="kbtable">
+<tr><th>节次</th><th>星期一</th><th>星期二</th><th>备注</th></tr>
+<tr>
+  <td>第1-2节</td>
+  <td>
+    <div class="kbcontent">大学英语<br>张三<br>教1-101</div>
+    <div class="kbcontent" style="display:none">&nbsp;</div>
+  </td>
+  <td>&nbsp;</td>
+  <td>忽略</td>
+</tr>
+</table>
+"""
+
+
+class JWXTScheduleTest(unittest.TestCase):
+    def test_parse_schedule_maps_weekday_columns(self):
+        _rows, items = parse_schedule(SCHEDULE_TABLE)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["day"], "周一")
+        self.assertEqual(items[0]["period"], "第1-2节")
+        self.assertEqual(items[0]["course_name"], "大学英语")
+        self.assertEqual(items[0]["lines"][1], "张三")
+        self.assertIn("教1-101", items[0]["text"])
+
+    def test_parse_schedule_skips_empty_and_unknown_columns(self):
+        raw = """
+        <table id="kbtable">
+        <tr><th>节次</th><th>星期一</th><th>星期二</th><th>备注</th></tr>
+        <tr><td>第3-4节</td><td>-</td><td>&nbsp;</td><td>其它</td></tr>
+        </table>
+        """
+        _rows, items = parse_schedule(raw)
+        self.assertEqual(items, [])
+
+    def test_parse_schedule_header_only_is_empty(self):
+        raw = '<table id="kbtable"><tr><th>节次</th><th>星期一</th></tr></table>'
+        _rows, items = parse_schedule(raw)
+        self.assertEqual(items, [])
+
+    def test_schedule_url_includes_week_and_mode(self):
+        target = schedule_url("2025-2026-3", "1", "ABC")
+        self.assertIn("xskb_list.do?", target)
+        self.assertIn("sfFD=1", target)
+        self.assertIn("xnxq01id=2025-2026-3", target)
+        self.assertIn("zc=1", target)
+        self.assertIn("kbjcmsid=ABC", target)
+
+    def test_schedule_requires_login_page(self):
+        client = JWXTClient()
+        client.text = lambda *_args, **_kwargs: (
+            200,
+            "http://zhjw.qfnu.edu.cn/jsxsd/xskb/xskb_list.do",
+            "请输入账号 请输入密码 请输入验证码",
+        )
+        with self.assertRaises(Exception) as caught:
+            schedule(client, "2025-2026-3", "1", "")
+        self.assertEqual(caught.exception.message, "schedule page requires login")
+
+    def test_cli_schedule_returns_items_and_reports_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+
+        def fake_text(self, method, target, body=None, headers=None, same_origin=False):
+            del self, method, body, headers, same_origin
+            if "xnxq01id=2025-2026-3" not in target or "zc=1" not in target:
+                raise AssertionError("missing schedule query: " + target)
+            return 200, target, SCHEDULE_TABLE
+
+        JWXTClient.text = fake_text
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write('{"cookies":[]}\n')
+                out = io.StringIO()
+                code = run_jwxt(
+                    ["schedule", "--semester", "2025-2026-3", "--week", "1", "--session-path", path],
+                    out,
+                )
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["items"], body["schedule"])
+        self.assertEqual(body["items"][0]["day"], "周一")
+        self.assertEqual(body["week"], "1")
+        self.assertEqual(events, [("jwxt.schedule", "success")])
 
 
 def cookie_values(cookies, name):

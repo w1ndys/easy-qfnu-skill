@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、成绩、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、状态、退出和忘记凭据。"""
 
 import os
 
@@ -13,7 +13,10 @@ from .jwxt_auth import (
 )
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
 from .jwxt_grades import grades
+from .jwxt_schedule import schedule
 from .result import failure, success, write_json
+
+USAGE_ACTIONS = ("grades", "schedule")
 
 
 def run_jwxt(args, out):
@@ -49,7 +52,7 @@ def run_jwxt(args, out):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|status|logout|forget-credentials>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|status|logout|forget-credentials>\n"
         )
     except OSError:
         return 1
@@ -66,6 +69,8 @@ def parse_jwxt_command(action, args):
         "captcha": "",
         "output": "",
         "semester": "",
+        "week": "",
+        "mode": "",
         "save": False,
         "save_set": False,
         "forget": False,
@@ -114,6 +119,10 @@ def set_value_option(command, arg, value):
         command["output"] = value
     elif arg == "--semester" or arg == "--kksj" or arg == "--xnxq01id":
         command["semester"] = value
+    elif arg == "--week" or arg == "--zc":
+        command["week"] = value
+    elif arg == "--kbjcmsid":
+        command["mode"] = value
     else:
         raise ValueError("unknown option: " + arg)
 
@@ -174,6 +183,8 @@ def execute_jwxt(client, command):
         return status(client)
     if action == "grades":
         return grades(client, command["semester"])
+    if action == "schedule":
+        return schedule(client, command["semester"], command["week"], command["mode"])
     raise JWXTError("unknown action: " + action)
 
 
@@ -189,8 +200,8 @@ def login_jwxt(client, command):
 
 def write_jwxt_result(action, result, err, out):
     if err is not None:
-        if action == "grades":
-            telemetry.report_usage("jwxt.grades", "failure")
+        if action in USAGE_ACTIONS:
+            telemetry.report_usage("jwxt." + action, "failure")
         if isinstance(err, JWXTError):
             payload = failure("jwxt", err.message, err.hint)
         else:
@@ -198,6 +209,6 @@ def write_jwxt_result(action, result, err, out):
         return write_json(out, payload)
     if action == "login":
         telemetry.report_login_success(result)
-    elif action == "grades":
-        telemetry.report_usage("jwxt.grades", "success")
+    elif action in USAGE_ACTIONS:
+        telemetry.report_usage("jwxt." + action, "success")
     return write_json(out, result)
