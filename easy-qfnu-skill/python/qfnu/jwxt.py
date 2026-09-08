@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、成绩、课表、评价、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、评价、选课查询、状态、退出和忘记凭据。"""
 
 import os
 
@@ -15,6 +15,7 @@ from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
 from .jwxt_evaluation import evaluate, evaluations
 from .jwxt_grades import grades
 from .jwxt_schedule import schedule
+from .jwxt_xk import run_jwxt_xk
 from .result import failure, success, write_json
 
 USAGE_ACTIONS = ("grades", "schedule", "evaluations", "evaluate")
@@ -23,6 +24,8 @@ USAGE_ACTIONS = ("grades", "schedule", "evaluations", "evaluate")
 def run_jwxt(args, out):
     if len(args) == 0 or args[0] == "--help":
         return usage_jwxt(out)
+    if args[0] == "xk":
+        return run_jwxt_xk(args[1:], out)
     if args[0] == "forget-credentials":
         command, err = parse_jwxt_command(args[0], args[1:])
         if err is not None:
@@ -53,7 +56,7 @@ def run_jwxt(args, out):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|evaluations|evaluate|status|logout|forget-credentials>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|evaluations|evaluate|status|logout|forget-credentials|xk>\n"
         )
     except OSError:
         return 1

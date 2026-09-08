@@ -75,11 +75,11 @@ class JWXTAuthTest(unittest.TestCase):
 
     def test_cli_dispatches_jwxt_and_rejects_unknown_action(self):
         out = io.StringIO()
-        code = run(["jwxt", "xk"], out, io.StringIO())
+        code = run(["jwxt", "relay"], out, io.StringIO())
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
-        self.assertIn("unknown action: xk", body["error"])
+        self.assertIn("unknown action: relay", body["error"])
 
     def test_status_keeps_login_when_profile_enrichment_fails(self):
         with tempfile.TemporaryDirectory() as temp:
