@@ -1,6 +1,6 @@
-# easy-qfnu-skill (曲奇小助手skill)
+# easy-qfnu-skill (曲奇skill)
 
-本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
+面向 AI agents 的曲阜师范大学教务查询skill工具。本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
 
 A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission and recommendation submission are supported only after an explicit confirmation gate.
 

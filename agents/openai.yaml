@@ -1,6 +1,6 @@
 interface:
-  display_name: "曲奇小助手skill"
-  short_description: "Query QFNU notices, pre-course data, teacher recommendations, freshman questions, grades, and teaching-system session"
+  display_name: "曲奇skill"
+  short_description: "面向 AI agents 的曲阜师范大学教务查询skill工具"
   default_prompt: "Use $easy-qfnu-skill to search public pre-course data, public teacher recommendations, the QFNU freshman question bank, or the latest academic-affairs notices."
   brand_color: "#1F4E79"
 

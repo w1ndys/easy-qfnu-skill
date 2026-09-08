@@ -1,0 +1,7 @@
+interface:
+  display_name: "人话编码契约"
+  short_description: "按分层方式协作、按 commit 汇报并控制编码节奏"
+  default_prompt: "Use $human-coding-contract to follow the plain-language, layered coding workflow."
+
+policy:
+  allow_implicit_invocation: false
