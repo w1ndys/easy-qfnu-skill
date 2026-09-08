@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、状态、退出和忘记凭据。"""
 
 import os
 
@@ -12,6 +12,7 @@ from .jwxt_auth import (
     status,
 )
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
+from .jwxt_grades import grades
 from .result import failure, success, write_json
 
 
@@ -48,7 +49,7 @@ def run_jwxt(args, out):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|status|logout|forget-credentials>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|status|logout|forget-credentials>\n"
         )
     except OSError:
         return 1
@@ -64,6 +65,7 @@ def parse_jwxt_command(action, args):
         "password": "",
         "captcha": "",
         "output": "",
+        "semester": "",
         "save": False,
         "save_set": False,
         "forget": False,
@@ -110,6 +112,8 @@ def set_value_option(command, arg, value):
         command["captcha"] = value
     elif arg == "--out" or arg == "-o":
         command["output"] = value
+    elif arg == "--semester" or arg == "--kksj" or arg == "--xnxq01id":
+        command["semester"] = value
     else:
         raise ValueError("unknown option: " + arg)
 
@@ -168,6 +172,8 @@ def execute_jwxt(client, command):
         return login_jwxt(client, command)
     if action == "status" or action == "whoami":
         return status(client)
+    if action == "grades":
+        return grades(client, command["semester"])
     raise JWXTError("unknown action: " + action)
 
 
@@ -183,6 +189,8 @@ def login_jwxt(client, command):
 
 def write_jwxt_result(action, result, err, out):
     if err is not None:
+        if action == "grades":
+            telemetry.report_usage("jwxt.grades", "failure")
         if isinstance(err, JWXTError):
             payload = failure("jwxt", err.message, err.hint)
         else:
@@ -190,4 +198,6 @@ def write_jwxt_result(action, result, err, out):
         return write_json(out, payload)
     if action == "login":
         telemetry.report_login_success(result)
+    elif action == "grades":
+        telemetry.report_usage("jwxt.grades", "success")
     return write_json(out, result)
