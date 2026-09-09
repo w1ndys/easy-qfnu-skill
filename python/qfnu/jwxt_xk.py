@@ -21,7 +21,7 @@ XK_LIVE_NOTICE = (
     "默认会扫描全部选课模块，因此能探测目标课程实际所在模块；网页前端可能按年级隐藏部分模块入口，本查询不受该限制。"
     "本命令只读，不会提交选课。"
 )
-XK_CACHED_HINT = "当前没有开放的选课轮次时，可改用 easy-qfnu precourse search 查询公开预选课缓存（定时快照，可能滞后）"
+XK_CACHED_HINT = "当前没有开放的选课轮次或即时查询无结果时，先询问用户是否改用夫子校园提供的预选课缓存（后台定时缓存，有一定延迟），不要直接查询"
 XK_PARSE_HINT = "支持 easy-qfnu jwxt xk rounds 与 easy-qfnu jwxt xk search"
 ID_FROM_QUERY = re.compile(r"jx0502zbid=([A-Za-z0-9]+)")
 ID_FROM_CALL = re.compile(r"(?i)(?:xsxkFun|jrxk)\(['\"]([A-Za-z0-9]+)['\"]\)")

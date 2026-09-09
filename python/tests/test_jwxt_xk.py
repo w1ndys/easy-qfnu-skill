@@ -185,7 +185,8 @@ class JWXTXKCLITest(unittest.TestCase):
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "当前没有开放的选课轮次")
-        self.assertIn("precourse search", body["hint"])
+        self.assertIn("夫子校园", body["hint"])
+        self.assertIn("询问", body["hint"])
 
     def test_cli_xk_search_requires_login(self):
         original = install_router(
