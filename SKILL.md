@@ -1,6 +1,6 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades and schedules, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions.
+description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades, schedules, and training-program completion, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, training programs, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions.
 ---
 
 # easy-qfnu-skill (曲奇skill)
@@ -26,6 +26,7 @@ Current coverage:
 - Qiangzhi JWXT login/session (`http://zhjw.qfnu.edu.cn/`)
 - Read-only JWXT course-grade queries
 - Read-only JWXT semester-schedule queries
+- Read-only JWXT training-program and completion queries (`培养方案及完成情况`)
 - JWXT student-evaluation preview and explicitly confirmed submission
 - Public read-only cached pre-course catalog queries (no JWXT login)
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
@@ -42,7 +43,7 @@ Library-seat queries are not implemented yet.
 
 1. Before the first request in every conversation, read the latest public Release/Tag, update this skill to that Release/Tag, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
-3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, JWXT account/session data, or student evaluation.
+3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, JWXT account/session data, grades, schedule, training program, or student evaluation.
 4. Run `scripts/easy-qfnu` from this skill directory.
 5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords to the user.
 6. Stop on `ok: false`. Show `error` and `hint`. Read `upstream` when present. Do not invent another scraping path.
@@ -85,6 +86,8 @@ easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PAS
 easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
+easy-qfnu jwxt program
+easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
 easy-qfnu jwxt evaluate --score 89                         # preview only
 easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
@@ -131,6 +134,7 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - JWXT login, online status, or identity: before any login attempt, inspect a user-supplied password for Chinese or full-width punctuation. If any is present, do not fetch a captcha or run `jwxt login`; prominently warn the user in Chinese that punctuation in a normal JWXT password should be English half-width characters, and ask them to verify the password and retry. Never silently convert punctuation, guess the intended characters, or echo the password. After this preflight passes, run `jwxt status`. JSON `profile` contains `name`, `student_id`, `college`, `major`, and `class_name`. If `logged_in` is false, run `jwxt login` with environment variables or user-supplied credentials. Never write the password to the session file, Git, or a response.
 - Course grades: run `jwxt grades --semester <academic-year-semester>`. Omitting `--semester` uses the system default. Read only the course, grade, credit, and GPA fields from `items`/`grades`; never submit a form. After presenting the grades, ask whether the user wants public teacher recommendations for those courses. If they agree, run `recommendation search --course "<course name>"` for each chosen course. If the result is empty, say there is no public recommendation; never invent one.
 - Semester schedule: run `jwxt schedule --semester <academic-year-semester> [--week <week>]`. Optionally pass `--kbjcmsid` for a period scheme; otherwise use the system default. Read only weekdays, periods, and course details from `items`/`schedule`.
+- Training program (`培养方案及完成情况`): after JWXT login, run `jwxt program`. Optional `--keyword` filters courses or 选课组 by name/code. Read `objectives`/`description` for 培养目标 and 详细说明. Read `groups[]` (`group_name`, `required_credits`, `earned_credits`, `courses`) aligned with official `table#mxh`. Each course has `course_code`, `course_name`, `status` (完成情况, e.g. `已修(优)` or empty), `course_prop`, `course_attr`, `credits`, `hours`, `term`. `items`/`program` is the flattened course list with `group_name`. Summarize unfinished groups/courses (`status` empty or not starting with 已修) and remaining credits in Chinese. Never submit a form. `jwxt pyfa` is an alias.
 - Student evaluation: run `jwxt evaluations` first to list the current batch and the course IDs for that response. Run `jwxt evaluate --score <target>` to preview the generated option selections; it never submits without `--confirm`. Before using `--confirm`, show the course, teacher, indicators, and total scores in Chinese and obtain the user's explicit approval in the current conversation. Use `--course <id>` (repeatable or comma-separated) to limit submissions.
 - Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. The default path is `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override it with `QFNU_JWXT_CREDENTIALS_PATH`.
 - Credential precedence is command-line arguments, environment variables, then saved credentials. Saved credentials are separate from the session file. `jwxt logout` preserves credentials by default; remove them with `jwxt forget-credentials` or `jwxt logout --forget-credentials`.
@@ -156,4 +160,4 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
 - Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.
 
-Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, schedule parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed.
+Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, schedule, training-program parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed.

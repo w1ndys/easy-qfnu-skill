@@ -12,6 +12,7 @@ Current coverage:
 - Login, session, and profile for the [Qiangzhi teaching system](http://zhjw.qfnu.edu.cn/) (`jsxsd`)
 - Read-only course-grade queries from the Qiangzhi teaching system
 - Read-only semester-schedule queries from the Qiangzhi teaching system
+- Read-only training-program and completion queries (`培养方案及完成情况`) from the Qiangzhi teaching system
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
 - Public read-only pre-course catalog and schedule queries (no JWXT login)
@@ -103,6 +104,8 @@ easy-qfnu jwxt login --username <student-id> --password <password>  # independen
 easy-qfnu jwxt status   # logged_in and profile
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
+easy-qfnu jwxt program
+easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
 easy-qfnu jwxt evaluate --score 89                         # preview only
 easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval

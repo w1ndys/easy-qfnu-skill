@@ -4,7 +4,7 @@ Base: `http://zhjw.qfnu.edu.cn/`
 
 Product: Qiangzhi (`强智`) `jsxsd`
 
-Current coverage: login, session, student profile, course grades, semester schedule, live read-only course-selection catalog search during an open round, explicitly confirmed student evaluations, and explicitly confirmed course/teacher recommendation submission. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`. Never submit a course-selection action.
+Current coverage: login, session, student profile, course grades, semester schedule, training-program completion, live read-only course-selection catalog search during an open round, explicitly confirmed student evaluations, and explicitly confirmed course/teacher recommendation submission. Queries are read-only; do not reconstruct the captcha or encryption flow in the agent; call `scripts/easy-qfnu jwxt`. Never submit a course-selection action.
 
 ## Authentication
 
@@ -63,6 +63,8 @@ easy-qfnu jwxt login --username <student-id> --password <password>  # independen
 easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
+easy-qfnu jwxt program
+easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
 easy-qfnu jwxt evaluate --score 89                         # preview only
 easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit after explicit approval
@@ -136,7 +138,7 @@ All paths are under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. The C
 | Course-selection center (`学生选课中心`) | `/jsxsd/xsxk/xklc_list` | CLI `jwxt xk rounds` lists open rounds. `jwxt xk search` enters a round only to query course JSON; never call `*Oper` selection URLs. |
 | Course-selection results (`选课结果查询`) | `/jsxsd/xkgl/xsxkjgcx` | GET 200 |
 | Academic calendar (`教学周历`) | `/jsxsd/jxzl/jxzl_query` | GET 200 |
-| Program plan and completion (`培养方案及完成情况`) | `/jsxsd/pyfa/topyfamx` | GET 200; large page |
+| Program plan and completion (`培养方案及完成情况`) | `/jsxsd/pyfa/topyfamx` | GET 200; large page. CLI: `jwxt program` (alias `jwxt pyfa`). Parser matches easy-qfnu-web: `span#pymb` (培养目标 / 详细说明) and `table#mxh` rows. A cell containing both `应修` and `已修` starts a 选课组; later rows in the group have no group cell. Skip 表头 / 小计 / 合计. Optional `--keyword` filters groups or courses. Never submit a form. |
 
 Complete grade-query iframe paths:
 

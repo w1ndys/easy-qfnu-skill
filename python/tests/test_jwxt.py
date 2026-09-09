@@ -13,6 +13,7 @@ from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_m
 from qfnu.jwxt_auth import status as jwxt_status
 from qfnu.jwxt_client import JWXT_BASE, JWXTClient, cookies_for_url, make_cookie
 from qfnu.jwxt_grades import grades, parse_grades
+from qfnu.jwxt_program import parse_program, program
 from qfnu.jwxt_schedule import parse_schedule, schedule, schedule_url
 
 
@@ -321,6 +322,154 @@ class JWXTScheduleTest(unittest.TestCase):
         self.assertEqual(body["items"][0]["day"], "周一")
         self.assertEqual(body["week"], "1")
         self.assertEqual(events, [("jwxt.schedule", "success")])
+
+
+PROGRAM_PAGE = """
+<table id="dataList">
+<caption>网络空间安全教学计划培养方案及教学计划</caption>
+<tr><td><span id="pymb">培养德智体美劳全面发展的人才</span></td></tr>
+<tr><td><span id="pymb">本专业培养网络安全人才。<br>1.掌握基础。<br>2.具备实践。</span></td></tr>
+<table id="mxh">
+<tbody>
+<tr>
+  <th>课程体系</th><th>选课组</th><th>课程编号</th><th>课程名称</th>
+  <th>完成情况</th><th>课程性质</th><th>课程属性</th><th>学分</th>
+  <th>讲课学时</th><th>实践学时</th><th>讲座学时</th><th>实验学时</th>
+  <th>设计学时</th><th>其中上机学时</th><th>讨论辅导学时</th><th>课外学时</th>
+  <th>网络学时</th><th>总学时</th><th>开设学期</th>
+</tr>
+<tr>
+  <td align="center" rowspan="2">通识课-创新创业课组<br>(应修 2 / 已修 2)</td>
+  <td>&nbsp;</td>
+  <td>540001</td><td>大学生职业规划</td><td>已修(优)</td>
+  <td>公共必修课</td><td>必修</td><td>1</td>
+  <td>18</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td>
+  <td>18</td><td>2</td>
+</tr>
+<tr>
+  <td>&nbsp;</td>
+  <td>540005</td><td>大学生就业与创业指导</td><td>已修(良)</td>
+  <td>公共必修课</td><td>必修</td><td>1</td>
+  <td>18</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td>
+  <td>18</td><td>5</td>
+</tr>
+<tr><td colspan="7">小计</td><td>2</td></tr>
+<tr>
+  <td align="center" rowspan="1">专业课-专业核心课程模块<br>(应修 68 / 已修 64)</td>
+  <td>&nbsp;</td>
+  <td>301001</td><td>高等数学1</td><td></td>
+  <td>专业必修课</td><td>必修</td><td>4</td>
+  <td>72</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td>
+  <td>72</td><td>1</td>
+</tr>
+<tr><td colspan="7">小计</td><td>68</td></tr>
+<tr><td colspan="2">学年学期</td></tr>
+<tr><td colspan="7">合计</td></tr>
+</tbody>
+</table>
+</table>
+"""
+
+
+class JWXTProgramTest(unittest.TestCase):
+    def test_parse_program_maps_mxh_groups_and_continuation_rows(self):
+        meta, groups, items = parse_program(PROGRAM_PAGE)
+        self.assertEqual(meta["program_name"], "网络空间安全教学计划培养方案及教学计划")
+        self.assertEqual(meta["objectives"], "培养德智体美劳全面发展的人才")
+        self.assertIn("本专业培养网络安全人才", meta["description"])
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(groups[0]["group_name"], "通识课-创新创业课组")
+        self.assertEqual(groups[0]["required_credits"], "2")
+        self.assertEqual(groups[0]["earned_credits"], "2")
+        self.assertEqual(len(groups[0]["courses"]), 2)
+        self.assertEqual(groups[0]["courses"][0]["course_code"], "540001")
+        self.assertEqual(groups[0]["courses"][0]["status"], "已修(优)")
+        self.assertEqual(groups[0]["courses"][1]["course_name"], "大学生就业与创业指导")
+        self.assertEqual(groups[0]["courses"][1]["term"], "5")
+        self.assertEqual(groups[1]["group_name"], "专业课-专业核心课程模块")
+        self.assertEqual(groups[1]["earned_credits"], "64")
+        self.assertEqual(items[-1]["course_name"], "高等数学1")
+        self.assertEqual(items[-1]["group_name"], "专业课-专业核心课程模块")
+        self.assertEqual(len(items), 3)
+
+    def test_parse_program_empty_without_mxh(self):
+        meta, groups, items = parse_program("<div>培养方案及完成情况</div>")
+        self.assertEqual(meta["objectives"], "")
+        self.assertEqual(groups, [])
+        self.assertEqual(items, [])
+
+    def test_program_requires_login_page(self):
+        client = JWXTClient()
+        client.text = lambda *_args, **_kwargs: (
+            200,
+            "http://zhjw.qfnu.edu.cn/jsxsd/pyfa/topyfamx",
+            "请输入账号 请输入密码 请输入验证码",
+        )
+        with self.assertRaises(Exception) as caught:
+            program(client, "")
+        self.assertEqual(caught.exception.message, "program page requires login")
+
+    def test_cli_program_follows_iframe_filters_and_reports_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+
+        def fake_text(self, method, target, body=None, headers=None, same_origin=False):
+            del self, method, body, headers, same_origin
+            if target.endswith("/pyfa/topyfamx"):
+                return 200, target, '<iframe src="/jsxsd/pyfa/inner.jsp"></iframe>'
+            if target.endswith("/pyfa/inner.jsp"):
+                return 200, target, PROGRAM_PAGE
+            raise AssertionError("unexpected program url: " + target)
+
+        JWXTClient.text = fake_text
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write('{"cookies":[]}\n')
+                out = io.StringIO()
+                code = run_jwxt(["program", "--keyword", "高等数学", "--session-path", path], out)
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["items"], body["program"])
+        self.assertEqual(body["items"][0]["course_name"], "高等数学1")
+        self.assertEqual(body["keyword"], "高等数学")
+        self.assertEqual(body["groups"][0]["group_name"], "专业课-专业核心课程模块")
+        self.assertEqual(body["objectives"], "培养德智体美劳全面发展的人才")
+        self.assertEqual(events, [("jwxt.program", "success")])
+
+    def test_cli_pyfa_alias_reports_program_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+        JWXTClient.text = lambda *_args, **_kwargs: (
+            200,
+            "http://zhjw.qfnu.edu.cn/jsxsd/pyfa/topyfamx",
+            PROGRAM_PAGE,
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{}\n")
+                out = io.StringIO()
+                code = run_jwxt(["pyfa", "--session-path", path], out)
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["count"], 3)
+        self.assertEqual(events, [("jwxt.program", "success")])
 
 
 def cookie_values(cookies, name):
