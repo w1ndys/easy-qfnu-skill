@@ -33,7 +33,7 @@ easy-qfnu precourse popular --field teacherName
 | `--location` | `location` |
 | `--campus` | `campus` |
 
-At least one non-empty search condition is required. The service returns at most 500 courses. `q` is an OR match across course code, course name, and teacher name; the other supplied filters are combined with AND.
+At least one non-empty search condition is required. `q` is an OR match across course code, course name, and teacher name; the other supplied filters are combined with AND.
 
 ## Response and freshness
 
