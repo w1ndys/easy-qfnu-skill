@@ -1,6 +1,6 @@
 # Public pre-course catalog
 
-The public pre-course catalog is a **夫子校园 cached, read-only snapshot** (后台定时缓存，有一定延迟). It does not require a JWXT session and it cannot select or preselect a course.
+The public pre-course catalog is a **夫子校园 cached, read-only snapshot** (后台定时缓存，有一定延迟). It does not require a JWXT session and it cannot select or preselect a course. A browser query page is at `https://precourse.easy-qfnu.top/`; agents should still use the CLI.
 
 There is a separate **live** catalog: `easy-qfnu jwxt xk search`. That command needs a logged-in JWXT session. Always tell the user which one you used:
 

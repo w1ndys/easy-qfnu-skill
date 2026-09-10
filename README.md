@@ -15,7 +15,7 @@ Current coverage:
 - Read-only training-program and completion queries (`培养方案及完成情况`) from the Qiangzhi teaching system
 - Student-evaluation preview and explicitly confirmed submission through the Qiangzhi teaching system
 - Freshman entrance-exam question-bank search through the public [freshman-exam.easy-qfnu.top](https://freshman-exam.easy-qfnu.top/) API
-- Public read-only pre-course catalog and schedule queries (no JWXT login)
+- Public read-only pre-course catalog and schedule queries via [precourse.easy-qfnu.top](https://precourse.easy-qfnu.top/) (no JWXT login)
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
 

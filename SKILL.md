@@ -28,7 +28,7 @@ Current coverage:
 - Read-only JWXT semester-schedule queries
 - Read-only JWXT training-program and completion queries (`培养方案及完成情况`)
 - JWXT student-evaluation preview and explicitly confirmed submission
-- Public read-only cached pre-course catalog queries (no JWXT login)
+- Public read-only cached pre-course catalog queries (`https://precourse.easy-qfnu.top/`, no JWXT login)
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
 
@@ -125,7 +125,7 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - Requests such as “有没有选课/考试/教材通知”: run `jwc search "<keyword>"`, then `jwc get` for the best match when the user needs dates, steps, or attachments.
 - One known article: run `jwc get` with the official URL or `info/<category>/<id>.htm`.
 - Freshman entrance-exam questions: run `freshman search "<keyword>"`; answer from each item's question, options, and answer. Use `--page` and `--page-size` for pagination.
-- Cached pre-course data (夫子校园): run `precourse search [keyword]` with optional field filters only after the live path failed or found nothing **and** the user agreed to use this source. No JWXT login is needed. Use `precourse meta` when the data update time matters, and report that this is a 夫子校园 scheduled snapshot (后台定时缓存，有一定延迟), not the live enrollment database. Never run this fallback silently.
+- Cached pre-course data (夫子校园): run `precourse search [keyword]` with optional field filters only after the live path failed or found nothing **and** the user agreed to use this source. No JWXT login is needed. Use `precourse meta` when the data update time matters, and report that this is a 夫子校园 scheduled snapshot (后台定时缓存，有一定延迟), not the live enrollment database. Never run this fallback silently. Users can also browse `https://precourse.easy-qfnu.top/` themselves.
 - Live pre-course/course-selection catalog: when the user wants a course, remaining seats, whether it is in this round, or which selection module it lives in, first ensure JWXT login, then probe with `jwxt xk rounds`. If a round is open, immediately run `jwxt xk search --course "<name or code>"` and/or `--teacher "<name>"` without asking. Always tell the user this is 即时查询. Default search scans every module; `located_modules` is the probed module list (网页可能因年级隐藏这些入口，API 不受该限制). Never call a selection/submit URL. If no round is open, or the live search fails / returns no matching course, stop and ask in Chinese whether to query the 夫子校园 cached catalog (后台定时缓存，有一定延迟). Only run `precourse search` after the user agrees.
 - Public course/teacher recommendations: run `recommendation search --course "<course>"` and/or `--teacher "<teacher>"`. At least one non-empty flag is required. `--top` defaults to 20 and is capped at 100. No JWXT login. If `count` is 0 or `items` is empty, say there is no public recommendation; never invent a review or score.
 - Submit a course/teacher recommendation: requires a logged-in JWXT session. Draft `course_name`, `teacher_name`, `year`, `reason`, and `nickname` from the user's words (`year` is the academic year, not a semester code). Clean the text, show it to the user, and wait for explicit confirmation in the current conversation. Nickname is public data; if the user does not agree to publish one, set `"nickname": null`. Then pipe the JSON to `jwxt relay recommendation`. Do not submit without confirmation. Users cannot delete a recommendation through this skill.
