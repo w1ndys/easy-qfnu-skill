@@ -91,9 +91,33 @@ class JWXTAuthTest(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertIn("unknown action: nope", body["error"])
 
+    def test_login_without_captcha_requires_manual_reading(self):
+        trace.reset(False)
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "session.json")
+            out = io.StringIO()
+            code = run_jwxt(
+                [
+                    "login",
+                    "--username",
+                    "2023413695",
+                    "--password",
+                    "placeholder",
+                    "--session-path",
+                    path,
+                ],
+                out,
+            )
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "captcha is required")
+        self.assertIn("jwxt captcha", body["hint"])
+        self.assertIsNone(trace.last_exchange())
+
     def test_status_keeps_login_when_profile_enrichment_fails(self):
         with tempfile.TemporaryDirectory() as temp:
-            client = JWXTClient(os.path.join(temp, "session.json"), "")
+            client = JWXTClient(os.path.join(temp, "session.json"))
             client.meta["username"] = "student"
             client.jar.set_cookie(
                 make_cookie("JSESSIONID", "active", "/", "zhjw.qfnu.edu.cn", False, None)
@@ -113,7 +137,7 @@ class JWXTAuthTest(unittest.TestCase):
     def test_session_persists_cookies_for_scoped_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             path = os.path.join(temp, "session.json")
-            client = JWXTClient(path, "")
+            client = JWXTClient(path)
             client.jar.set_cookie(make_cookie("JSESSIONID", "root", "/", "zhjw.qfnu.edu.cn", False, None))
             client.jar.set_cookie(
                 make_cookie("JSESSIONID", "jsxsd", "/jsxsd", "zhjw.qfnu.edu.cn", False, None)
@@ -125,7 +149,7 @@ class JWXTAuthTest(unittest.TestCase):
             self.assertEqual(paths.get("/"), "root")
             self.assertEqual(paths.get("/jsxsd"), "jsxsd")
 
-            loaded = JWXTClient(path, "")
+            loaded = JWXTClient(path)
             loaded.load()
             root_values = cookie_values(cookies_for_url(loaded.jar, JWXT_BASE + "/"), "JSESSIONID")
             jsxsd_values = cookie_values(

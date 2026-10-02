@@ -141,7 +141,6 @@ def usage_jwxt(out):
 def parse_jwxt_command(action, args):
     command = {
         "action": action,
-        "ocr_url": "",
         "session_path": "",
         "username": "",
         "password": "",
@@ -192,9 +191,7 @@ def parse_option(command, args):
 
 
 def set_value_option(command, arg, value):
-    if arg == "--ocr-url":
-        command["ocr_url"] = value
-    elif arg == "--session-path":
+    if arg == "--session-path":
         command["session_path"] = value
     elif arg == "--username" or arg == "-u":
         command["username"] = value
@@ -226,14 +223,12 @@ def set_value_option(command, arg, value):
 
 
 def apply_environment(command):
-    if command["ocr_url"] == "":
-        command["ocr_url"] = os.environ.get("QFNU_OCR_URL") or ""
     if not command["save_set"] and os.environ.get("QFNU_JWXT_SAVE_CREDENTIALS", "").lower() == "yes":
         command["save"] = True
 
 
 def prepare_client(command):
-    client = JWXTClient(command["session_path"], command["ocr_url"])
+    client = JWXTClient(command["session_path"])
     # captcha / 无验证码登录 / logout 会重建或删除会话，损坏文件不能挡住这些操作。
     needs_session = command["action"] != "captcha" and command["action"] != "logout" and (
         command["action"] != "login" or command["captcha"] != ""

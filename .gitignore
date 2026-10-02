@@ -4,7 +4,6 @@ __pycache__/
 .venv/
 venv/
 .ruff_cache/
-ocr/.venv/
 jwxt-session.json
 course_recommendation_data.db
 bin/

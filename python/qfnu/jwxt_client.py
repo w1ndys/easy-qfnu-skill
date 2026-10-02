@@ -198,11 +198,10 @@ def is_credential_request(target):
 
 
 class JWXTClient:
-    def __init__(self, session_path="", ocr_url=""):
+    def __init__(self, session_path=""):
         self.session_path = default_session_path()
         if session_path:
             self.session_path = expand_path(session_path)
-        self.ocr_url = (ocr_url or "").rstrip("/")
         self.jar = CookieJar()
         self.meta = {}
 

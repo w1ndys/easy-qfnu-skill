@@ -1,6 +1,5 @@
 """教务验证码、登录与本地凭据。"""
 
-import base64
 import html
 import json
 import os
@@ -165,45 +164,14 @@ def captcha(client, output):
     )
 
 
-def recognize(client, image):
-    if client.ocr_url == "":
-        raise JWXTError("OCR URL is not configured", "设置 QFNU_OCR_URL 或使用 jwxt login --captcha")
-    form = urlencode({"image": base64.b64encode(image).decode("ascii")}).encode("utf-8")
-    status, _, data = client.request(
-        "POST",
-        client.ocr_url + "/ocr",
-        form,
-        {"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    if status != 200:
-        raise OSError("OCR HTTP " + str(status))
-    try:
-        body = json.loads(data.decode("utf-8", errors="replace"))
-    except ValueError as exc:
-        raise OSError("OCR returned invalid JSON") from exc
-    code = body.get("code")
-    code_text = "<nil>" if code is None else str(code)
-    result = body.get("data") or ""
-    if result == "" or (code_text != "200" and code_text != "0" and code_text != "<nil>"):
-        raise OSError("OCR rejected captcha: " + str(body.get("message") or ""))
-    return result.strip()
-
-
-def prepare_login_captcha(client, captcha_text):
+def prepare_login_captcha(captcha_text):
+    """验证码只接受模型识图或用户人工识别的结果，不再调用外部 OCR 服务。"""
     if captcha_text:
         return captcha_text
-    client.reset_jar()
-    init_session(client)
-    image = fetch_captcha(client)
-    try:
-        return recognize(client, image)
-    except JWXTError:
-        raise
-    except OSError as exc:
-        raise JWXTError(
-            str(exc),
-            "部署独立 ddddocr 服务，或运行 easy-qfnu jwxt captcha 后手动传入验证码",
-        ) from exc
+    raise JWXTError(
+        "captcha is required",
+        "先运行 easy-qfnu jwxt captcha 获取验证码图片，读出后用 jwxt login --captcha <识图结果> 提交",
+    )
 
 
 def login_session_codes(client):
@@ -291,8 +259,6 @@ def build_login_result(client, username, password, save_credentials):
     )
     if warning:
         result["profile_warning"] = warning
-    if client.ocr_url:
-        result["ocr_url"] = client.ocr_url
     record_credential_save(result, username, password, save_credentials)
     return result
 
@@ -304,7 +270,7 @@ def login(client, username, password, captcha_text, save_credentials):
             "username/password required",
             "传入 --username/--password 或设置 QFNU_JWXT_USERNAME/QFNU_JWXT_PASSWORD",
         )
-    prepared = prepare_login_captcha(client, captcha_text)
+    prepared = prepare_login_captcha(captcha_text)
     body = submit_login(client, username, password, prepared)
     validate_login_response(body)
     return build_login_result(client, username, password, save_credentials)
@@ -348,19 +314,12 @@ def status(client):
 
 
 def expired_status(client):
-    if client.ocr_url:
-        username, password = load_credentials_file()
-        if username and password:
-            try:
-                result = login(client, username, password, "", False)
-                result["auto_relogin"] = True
-                return result
-            except (JWXTError, OSError):
-                pass
-    hint = "run easy-qfnu jwxt login again"
-    if client.ocr_url == "" and client.meta.get("username"):
-        hint = "会话已过期且未配置 QFNU_OCR_URL；请运行 easy-qfnu jwxt captcha，再用 easy-qfnu jwxt login --captcha 提交识别结果"
-    return not_logged_in(client, "jwxt session expired", hint, True)
+    return not_logged_in(
+        client,
+        "jwxt session expired",
+        "会话已过期；运行 easy-qfnu jwxt captcha 取新图片，读出验证码后用 easy-qfnu jwxt login --captcha 提交",
+        True,
+    )
 
 
 def not_logged_in(client, message, hint, expired):

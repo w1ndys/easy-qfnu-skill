@@ -10,41 +10,29 @@ Current coverage: login, session, student profile, course grades, semester sched
 
 Before fetching a captcha or attempting login, inspect a user-supplied password for Chinese or full-width punctuation. If any is present, stop and prominently warn the user in Chinese: punctuation in a normal JWXT password should be English half-width characters; verify the password and retry. Never silently convert punctuation, guess the intended characters, or echo the password.
 
-Login uses 6 sequential steps on **one Cookie jar**:
+Login uses 5 sequential steps on **one Cookie jar**:
 
 1. `GET /` — plant session cookies
 2. `GET /verifycode.servlet` — download captcha image bytes
-3. `POST {OCR}/ocr` — `image=<base64>` → `{code, data, message}`; call this only when an independent OCR service is configured. Model vision skips this step.
-4. `POST /Logon.do?method=logon&flag=sess` — empty body → `scode#sxh`
-5. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`; the CLI follows the returned same-origin SSO redirect chain to establish the JSXSD session, but never follows an external-origin redirect.
-6. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; success is HTTP 200 plus `教学一体化服务平台` or `glyphicon-class`
+3. `POST /Logon.do?method=logon&flag=sess` — empty body → `scode#sxh`
+4. `POST /Logon.do?method=logonLdap` — `userAccount=&userPassword=&RANDOMCODE=<captcha>&encoded=<encoded>`; the CLI follows the returned same-origin SSO redirect chain to establish the JSXSD session, but never follows an external-origin redirect.
+5. `GET /jsxsd/framework/xsMain.jsp` — **do not follow redirects**; success is HTTP 200 plus `教学一体化服务平台` or `glyphicon-class`
 
-Password errors stop immediately. Captcha errors restart from step 1, for at most 3 rounds. This applies both to OCR login and to the agent repeating the manual `captcha` + `login --captcha` pair. Retry network 5xx, 429, and timeout failures up to 3 times with a 1-second delay. If the site says the account is logged in elsewhere, stop; automatic status recovery never retries that case.
+Password errors stop immediately. Captcha errors restart from step 1, for at most 3 rounds. This applies to every captcha attempt, including the agent repeating the manual `captcha` + `login --captcha` pair. Retry network 5xx, 429, and timeout failures up to 3 times with a 1-second delay. If the site says the account is logged in elsewhere, stop; automatic status recovery never retries that case.
 
 `encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. The encoding is implemented inside the Python CLI.
 
 **Credential responses are never echoed to callers.** The failed-login page from `/Logon.do?method=logonLdap` re-renders the login form with the submitted plaintext password filled into `id="userPassword"` (verified against the live site with a synthetic account on 2026-10-02). Exchanges under `/Logon.do` are therefore recorded with `body_bytes` plus `[redacted credentials response, N bytes]` / `[redacted credentials request, N bytes]`, in `--debug` mode too. Other pages keep HTML-attribute redaction (`value="[redacted]"` on credential fields).
 
-### Captcha: model vision first
+### Captcha: model vision, else the user
 
-The default path requires no OCR installation:
+There is no OCR service in this path:
 
 1. Run `easy-qfnu jwxt captcha --out <png>`. It resets the jar, plants session cookies, downloads the image, writes `<png>`, and persists the jar with `captcha_pending: true`.
-2. Read the PNG with model vision.
-3. Run `easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>`. This skips image download and OCR, reuses the saved jar, fetches `scode#sxh`, builds `encoded`, and submits. A wrong captcha means only that this reading failed. Fetch a new image and retry, up to 3 complete captcha sessions before reporting failure.
+2. Read the PNG with model vision. When model vision is unavailable, show the same file to the user and use the user's reading.
+3. Run `easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>`. It reuses the saved jar, fetches `scode#sxh`, builds `encoded`, and submits. A wrong captcha means only that this reading failed. Fetch a new image and retry, up to 3 complete captcha sessions before reporting failure.
 
-When model vision is unavailable, deploy the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service to Vercel and set `QFNU_OCR_URL` to its root URL. If deployment or access encounters network errors, do not retry automatically. Show the `jwxt captcha` PNG to the user, let the user read it, then run `jwxt login --captcha "<user-reading>"`. Never guess captcha text.
-
-## Independent OCR
-
-The ddddocr Flask service lives in a separate repository and is not bundled with this skill. Deploy `w1ndys/ddddocr-vercel` to Vercel, then set its root URL before using automatic login:
-
-```bash
-export QFNU_OCR_URL="https://your-ddddocr-domain.vercel.app"
-easy-qfnu jwxt login --username <student-id> --password <password>
-```
-
-`QFNU_OCR_URL` and `--ocr-url` both accept the service root URL; the client appends `/ocr`. Contract: `POST /ocr` with form or JSON field `image` containing Base64 image data, returning `{ "code": 200, "data": "abcd", "message": "ok" }`. The service also exposes `GET /health`.
+`jwxt login` without `--captcha` fails with `captcha is required` and sends no request. There is no built-in OCR and no `--ocr-url` flag or `QFNU_OCR_URL` variable.
 
 ## Session and credentials
 
@@ -54,7 +42,7 @@ Credentials come from `--username`/`--password`, `QFNU_JWXT_USERNAME`/`QFNU_JWXT
 
 Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. Saved credentials are stored at `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override the path with `QFNU_JWXT_CREDENTIALS_PATH`. Its parent directory uses mode `0700` and the file uses `0600`.
 
-Credential precedence is command-line arguments, environment variables, then saved credentials. After an expired session, `jwxt status` makes one automatic OCR login attempt only when saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Wrong passwords and accounts logged in elsewhere stop without another automatic attempt.
+Credential precedence is command-line arguments, environment variables, then saved credentials. `jwxt status` never logs in automatically: an expired session returns a manual captcha hint. Wrong passwords and accounts logged in elsewhere stop without any automatic attempt.
 
 `jwxt status` never trusts the local session file: it loads the cookies, calls `xsMain.jsp`, and treats a non-200 response, `请输入账号` / `请输入密码` / `请输入验证码` in the body, or a missing success marker as expired. No session (`session_expired: false`), an expired session (`session_expired: true`), and a failed check (`session_expired: null`) all return `ok: false` with `logged_in: false` plus a `hint`; only a healthy session returns `ok: true` with `logged_in: true`. A caller that reads only `ok` can no longer mistake a dead session for a live one.
 
@@ -63,7 +51,6 @@ Credential precedence is command-line arguments, environment variables, then sav
 ```bash
 easy-qfnu jwxt captcha --out <png>             # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
-easy-qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
 easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
