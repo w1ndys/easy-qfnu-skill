@@ -111,7 +111,7 @@ The default JWC channel is `notices`, the homepage “重要通知” feed. See 
 
 ## Debug
 
-`--debug` (or `QFNU_DEBUG=1`) attaches the last upstream response even when `ok` is true, plus `exchanges` for the whole HTTP chain. Failures already include `upstream` without the flag.
+`--debug` (or `QFNU_DEBUG=1`) attaches the last upstream response even when `ok` is true, plus `exchanges` for the whole HTTP chain. Failures already include `upstream` without the flag. Login and session calls (`/Logon.do`) are always listed with `body_bytes` and a `[redacted credentials …]` marker instead of the body.
 
 Use it only when the returned data looks wrong, for example:
 
@@ -126,7 +126,7 @@ Rerun the original command once with the global flag before the subcommand:
 easy-qfnu --debug jwxt schedule --semester 2025-2026-3 --week 1
 ```
 
-Inspect `upstream.body` yourself. Do not paste the full raw body to the user unless they asked for debug details. Passwords, cookies, and `encoded` are already redacted. Do not reconstruct handwritten HTTP from the dump.
+Inspect `upstream.body` yourself. Do not paste the full raw body to the user unless they asked for debug details. Passwords, cookies, and `encoded` are already redacted, and `/Logon.do` login/session exchanges never carry a body at all — they only show `body_bytes` plus a `[redacted credentials …]` marker. Do not reconstruct handwritten HTTP from the dump.
 
 ## How to answer
 

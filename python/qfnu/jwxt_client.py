@@ -37,6 +37,8 @@ COOKIE_SCOPES = (
     ("/jsxsd", JWXT_BASE + "/jsxsd/framework/xsMain.jsp"),
 )
 
+CREDENTIAL_PATH = "/Logon.do"
+
 
 class JWXTError(Exception):
     def __init__(self, message, hint=""):
@@ -190,6 +192,11 @@ def cookies_for_url(jar, url):
     return matched
 
 
+def is_credential_request(target):
+    """登录/会话入口：带凭据的请求，正文一律不进 JSON 证据。"""
+    return urlparse(target).path.lower().startswith(CREDENTIAL_PATH.lower())
+
+
 class JWXTClient:
     def __init__(self, session_path="", ocr_url=""):
         self.session_path = default_session_path()
@@ -280,7 +287,15 @@ class JWXTClient:
         try:
             response = opener.open(request, timeout=REQUEST_TIMEOUT)
         except urllib.error.URLError as exc:
-            trace.record(method, target, 0, "", "network error: " + str(exc.reason), body)
+            trace.record(
+                method,
+                target,
+                0,
+                "",
+                "network error: " + str(exc.reason),
+                body,
+                sensitive=is_credential_request(target),
+            )
             raise OSError(str(exc.reason)) from exc
         try:
             data = response.read()
@@ -288,7 +303,15 @@ class JWXTClient:
             final_url = response.geturl() or target
         finally:
             response.close()
-        trace.record(method, final_url, status, data, "", body)
+        trace.record(
+            method,
+            final_url,
+            status,
+            data,
+            "",
+            body,
+            sensitive=is_credential_request(target),
+        )
         return status, final_url, data
 
     def text(self, method, target, body=None, headers=None, same_origin=False):

@@ -23,6 +23,8 @@ Password errors stop immediately. Captcha errors restart from step 1, for at mos
 
 `encoded` is `username + "%%%" + password` with `scode` characters inserted using `sxh` digit counts on the first 20 plaintext characters. The encoding is implemented inside the Python CLI.
 
+**Credential responses are never echoed to callers.** The failed-login page from `/Logon.do?method=logonLdap` re-renders the login form with the submitted plaintext password filled into `id="userPassword"` (verified against the live site with a synthetic account on 2026-10-02). Exchanges under `/Logon.do` are therefore recorded with `body_bytes` plus `[redacted credentials response, N bytes]` / `[redacted credentials request, N bytes]`, in `--debug` mode too. Other pages keep HTML-attribute redaction (`value="[redacted]"` on credential fields).
+
 ### Captcha: model vision first
 
 The default path requires no OCR installation:

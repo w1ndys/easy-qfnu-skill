@@ -1,6 +1,7 @@
 """全局请求证据。jwc/freshman/precourse/recommendation/jwxt 等用户 HTTP 都走这里。
 
-失败时 JSON 带完整上游正文；--debug 时成功也带。脱敏、不截断。不写文档、不发链接、不上报 hub。
+失败时 JSON 带完整上游正文；--debug 时成功也带。脱敏、不截断。登录/会话入口（/Logon.do）的请求与
+响应正文一律不进 JSON，只留字节数。不写文档、不发链接、不上报 hub。
 """
 
 import os
@@ -21,6 +22,11 @@ REDACT_KEYS = {
 FORM_RE = re.compile(
     r"(?i)(password|userPassword|userAccount|encoded|RANDOMCODE|Authorization|Cookie)=[^&]*"
 )
+
+
+INPUT_TAG_RE = re.compile(r"<input\b[^>]*>", re.IGNORECASE | re.DOTALL)
+ATTR_NAME_RE = re.compile(r"(?i)\b(?:id|name)\s*=\s*[\"']?([A-Za-z0-9_\-]+)")
+VALUE_ATTR_RE = re.compile(r"(?i)\bvalue\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
 
 debug_enabled = False
 _exchanges = []
@@ -61,21 +67,30 @@ def note(parse):
     current["parse"] = parse
 
 
-def record(method, url, status, body, parse="", request_body=None):
+def record(method, url, status, body, parse="", request_body=None, sensitive=False):
+    """记录一次上游交换。sensitive 用于登录/会话入口：正文只留字节数。"""
     raw = as_bytes(body)
     exchange = {
         "method": method,
         "url": sanitize_url(url),
         "status": status,
         "body_bytes": len(raw),
-        "body_text": sanitize_body(raw),
+        "body_text": redacted_credentials(raw, "response") if sensitive else sanitize_body(raw),
     }
     if parse:
         exchange["parse"] = parse
     if request_body:
-        exchange["request_text"] = sanitize_body(as_bytes(request_body))
+        sent = as_bytes(request_body)
+        if sensitive:
+            exchange["request_text"] = redacted_credentials(sent, "request")
+        else:
+            exchange["request_text"] = sanitize_body(sent)
     _exchanges.append(exchange)
     return exchange
+
+
+def redacted_credentials(raw, kind):
+    return "[redacted credentials " + kind + ", " + str(len(raw)) + " bytes]"
 
 
 def as_bytes(body):
@@ -159,7 +174,21 @@ def sanitize_url(url):
 def sanitize_body(raw):
     if looks_binary(raw):
         return "[binary " + str(len(raw)) + " bytes]"
-    return FORM_RE.sub(r"\1=[redacted]", raw.decode("utf-8", errors="replace"))
+    text = raw.decode("utf-8", errors="replace")
+    return redact_input_values(FORM_RE.sub(r"\1=[redacted]", text))
+
+
+def redact_input_values(text):
+    """兜底脱敏 HTML 属性回显：<input id="userPassword" value="明文密码">。"""
+
+    def replace(match):
+        tag = match.group(0)
+        names = [item.group(1).lower() for item in ATTR_NAME_RE.finditer(tag)]
+        if not any(name in REDACT_KEYS for name in names):
+            return tag
+        return VALUE_ATTR_RE.sub('value="[redacted]"', tag)
+
+    return INPUT_TAG_RE.sub(replace, text)
 
 
 def looks_binary(raw):

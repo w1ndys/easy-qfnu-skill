@@ -224,6 +224,60 @@ class TraceTest(unittest.TestCase):
         self.assertNotIn("exchanges", body)
 
 
+    def test_credential_exchange_hides_body_and_request(self):
+        raw = '<input type="password" id="userPassword" value="hunter2">'
+        exchange = trace.record(
+            "POST",
+            "http://zhjw.qfnu.edu.cn/Logon.do?method=logonLdap",
+            200,
+            raw,
+            "login showMsg",
+            "userAccount=&userPassword=&encoded=SECRET",
+            sensitive=True,
+        )
+        self.assertEqual(exchange["body_bytes"], len(raw))
+        self.assertNotIn("hunter2", exchange["body_text"])
+        self.assertNotIn("SECRET", exchange["request_text"])
+        out = io.StringIO()
+        write_json(out, failure("jwxt", "验证码错误!!", "重新运行 easy-qfnu jwxt captcha"))
+        body = json.loads(out.getvalue())
+        upstream = body["upstream"]
+        self.assertEqual(upstream["status"], 200)
+        self.assertNotIn("hunter2", upstream["body"])
+        self.assertIn("[redacted credentials response", upstream["body"])
+        self.assertEqual(upstream["parse"], "login showMsg")
+
+    def test_debug_keeps_credential_body_hidden(self):
+        trace.reset(True)
+        trace.record(
+            "POST",
+            "http://zhjw.qfnu.edu.cn/Logon.do?method=logonLdap",
+            200,
+            '<input id="userPassword" value="hunter2">',
+            "",
+            None,
+            sensitive=True,
+        )
+        out = io.StringIO()
+        write_json(out, success("jwxt", {"logged_in": True}))
+        body = json.loads(out.getvalue())
+        self.assertNotIn("hunter2", body["upstream"]["body"])
+        self.assertNotIn("hunter2", body["exchanges"][0]["body"])
+
+    def test_html_input_values_are_redacted(self):
+        raw = (
+            '<input type="password" id="userPassword" name="userPassword" value="hunter2">'
+            '<input type="text" id="userAccount" value="2023413695">'
+            '<input type="hidden" id="encoded" value="ABCDEF">'
+            '<input type="text" id="keyword" value="音乐">'
+        )
+        cleaned = trace.sanitize_body(raw.encode("utf-8"))
+        self.assertNotIn("hunter2", cleaned)
+        self.assertNotIn("2023413695", cleaned)
+        self.assertNotIn("ABCDEF", cleaned)
+        self.assertIn('value="[redacted]"', cleaned)
+        self.assertIn('value="音乐"', cleaned)
+
 class FetchTest(unittest.TestCase):
     def test_fetch_records_http_error(self):
         trace.reset(False)

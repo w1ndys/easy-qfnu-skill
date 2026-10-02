@@ -6,15 +6,24 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from qfnu import jwxt_auth, jwxt_client, trace
 from qfnu.cli import run
 from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_message
 from qfnu.jwxt_auth import status as jwxt_status
-from qfnu.jwxt_client import JWXT_BASE, JWXTClient, cookies_for_url, make_cookie
+from qfnu.jwxt_client import (
+    JWXT_BASE,
+    JWXTClient,
+    JWXTError,
+    cookies_for_url,
+    is_credential_request,
+    make_cookie,
+)
 from qfnu.jwxt_exams import exams, parse_exams, selected_semester, term_category
 from qfnu.jwxt_grades import grades, parse_grades
 from qfnu.jwxt_program import parse_program, program
 from qfnu.jwxt_schedule import parse_schedule, schedule, schedule_url
+from qfnu.result import failure, write_json
 
 
 class JWXTAuthTest(unittest.TestCase):
@@ -818,6 +827,79 @@ class JWXTRelayOfflineTest(unittest.TestCase):
         self.assertEqual(body["error"], "反馈与推荐提交暂时不可用")
         self.assertIn("1087015770", body["hint"])
 
+
+
+class LoginRedactionTest(unittest.TestCase):
+    """登录失败时上游回显的明文口令不能进 JSON（真实教务系统确实回显）。"""
+
+    ECHO_PAGE = (
+        '<li class="input_li" id="showMsg" style="color: red;">&nbsp;验证码错误!!</li>'
+        '<input type="text" class="form-control" id="userAccount" name="userAccount" '
+        'placeholder="请输入账号" value="0000000000">'
+        '<input type="password" class="form-control" id="userPassword" name="userPassword" '
+        'placeholder="请输入密码" value="fake-hunter2">'
+    )
+
+    def test_credential_request_detection(self):
+        self.assertTrue(
+            is_credential_request("http://zhjw.qfnu.edu.cn/Logon.do?method=logonLdap")
+        )
+        self.assertTrue(
+            is_credential_request("http://127.0.0.1:1/Logon.do?method=logon&flag=sess")
+        )
+        self.assertFalse(
+            is_credential_request("http://zhjw.qfnu.edu.cn/jsxsd/framework/xsMain.jsp")
+        )
+        self.assertFalse(
+            is_credential_request("http://zhjw.qfnu.edu.cn/jsxsd/kscj/cjcx_list?gnmkdm=N305005")
+        )
+
+    def test_login_failure_does_not_export_password(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or "0")
+                self.rfile.read(length)
+                if self.path.startswith("/Logon.do?method=logon&flag=sess"):
+                    payload = b"A1B2C3#31201"
+                else:
+                    payload = LoginRedactionTest.ECHO_PAGE.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = "http://127.0.0.1:" + str(server.server_address[1])
+        original = (jwxt_auth.SESS_URL, jwxt_auth.LOGIN_URL, jwxt_client.JWXT_BASE)
+        try:
+            jwxt_auth.SESS_URL = base + "/Logon.do?method=logon&flag=sess"
+            jwxt_auth.LOGIN_URL = base + "/Logon.do?method=logonLdap"
+            jwxt_client.JWXT_BASE = base
+            trace.reset(False)
+            client = JWXTClient()
+            client.jar.set_cookie(make_cookie("JSESSIONID", "stub", "/", "127.0.0.1", False, None))
+            body = jwxt_auth.submit_login(client, "0000000000", "fake-hunter2", "0000")
+            with self.assertRaises(JWXTError) as caught:
+                jwxt_auth.validate_login_response(body)
+            out = io.StringIO()
+            write_json(out, failure("jwxt", caught.exception.message, caught.exception.hint))
+            payload = out.getvalue()
+        finally:
+            server.shutdown()
+            server.server_close()
+            trace.reset(False)
+            jwxt_auth.SESS_URL, jwxt_auth.LOGIN_URL, jwxt_client.JWXT_BASE = original
+
+        self.assertIn("fake-hunter2", body)
+        self.assertNotIn("fake-hunter2", payload)
+        self.assertIn("[redacted credentials response", payload)
+        self.assertIn("验证码错误!!", payload)
+        self.assertIn("logonLdap", payload)
 
 if __name__ == "__main__":
     unittest.main()
