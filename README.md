@@ -3,7 +3,7 @@
 - 仓库与来源：https://github.com/w1ndys/easy-qfnu-skill（public）。本 skill 的源码、版本 Tag 与公开 Release 都以此仓库为准；使用前先看该仓库的最新 Release/Tag。
 - 本地版本：本目录的 `VERSION` 文件。
 
-面向 AI agents 的曲阜师范大学教务查询skill工具。本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
+曲阜师范大学skill（qfnu skill）：面向 AI agents 的曲阜师范大学教务查询 skill 工具。本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
 
 A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission is supported only after an explicit confirmation gate; feedback and recommendation submission are currently offline.
 
@@ -62,22 +62,19 @@ easy-qfnu jwxt login --username <student-id> --password <password> --captcha <ca
 
 Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. Credentials are stored in `~/.local/state/easy-qfnu-skill/jwxt-credentials.json` with access restricted to the current user.
 
-When model vision is unavailable, use the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service. Deploy that repository to Vercel and set its root URL:
+When model vision is unavailable, show the same image to the user and submit their reading:
 
 ```bash
-export QFNU_OCR_URL="https://your-ddddocr-domain.vercel.app"
-easy-qfnu jwxt login --username <student-id> --password <password>
+easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png
+easy-qfnu jwxt login --username <student-id> --password <password> --captcha "<user-reading>"
 ```
 
-The service exposes `POST /ocr`; form or JSON field `image` accepts Base64 captcha image data. See the ddddocr repository for a complete example.
-
-If OCR deployment or access encounters network errors, do not retry automatically. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
+`jwxt login` always requires `--captcha`; without it the command fails with `captcha is required` and makes no request. Never guess captcha text.
 
 Environment variables:
 
 | Variable | Description |
 |---|---|
-| `QFNU_OCR_URL` | Independent ddddocr service root URL; without it, login requires `--captcha` |
 | `QFNU_JWXT_USERNAME` | Student ID; alternative to `--username` |
 | `QFNU_JWXT_PASSWORD` | Teaching-system password; alternative to `--password` |
 | `QFNU_JWXT_COOKIE_PATH` | Session Cookie JSON path; default `~/.local/state/easy-qfnu-skill/jwxt-session.json` |
@@ -104,7 +101,6 @@ easy-qfnu recommendation search --teacher "张" --top 20
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
-easy-qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
 easy-qfnu jwxt status   # logged_in + session_expired + profile
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
@@ -121,7 +117,7 @@ easy-qfnu jwxt logout --forget-credentials  # clear session and credentials
 easy-qfnu jwxt forget-credentials  # clear saved credentials only
 ```
 
-When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.
+When `jwxt status` reports an expired session, it never logs in automatically: run `jwxt captcha` for a new image and submit a fresh reading. Password errors and accounts logged in elsewhere stop immediately without repeated retries.
 
 A captcha error means only that the current reading does not match. Run `jwxt captcha` again for a new image and session, then submit `jwxt login --captcha`; allow at most 3 consecutive attempts. Do not treat one captcha error as a password error.
 

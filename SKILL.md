@@ -1,6 +1,6 @@
 ---
 name: easy-qfnu-skill
-description: Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades, schedules, exam arrangements, and training-program completion, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, exam arrangements, training programs, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions. Developed at https://github.com/w1ndys/easy-qfnu-skill — read the newest Tag/Release there and update the local skill before answering.
+description: 曲阜师范大学skill（qfnu skill）：面向 AI agents 的曲阜师范大学（QFNU）教务查询 skill，覆盖教务处通知、新生题库、预选课缓存、公开选课与推荐、教务登录与只读成绩、课表、考试安排、培养方案等只读查询。Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades, schedules, exam arrangements, and training-program completion, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, exam arrangements, training programs, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions. Developed at https://github.com/w1ndys/easy-qfnu-skill — read the newest Tag/Release there and update the local skill before answering.
 ---
 
 # easy-qfnu-skill (曲奇skill)
@@ -90,7 +90,6 @@ easy-qfnu recommendation search --teacher "张" --top 20
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
 easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
-easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD"   # independent OCR when QFNU_OCR_URL is set
 easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
@@ -152,12 +151,11 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - Student evaluation: run `jwxt evaluations` first to list the current batch and the course IDs for that response. Run `jwxt evaluate --score <target>` to preview the generated option selections; it never submits without `--confirm`. Before using `--confirm`, show the course, teacher, indicators, and total scores in Chinese and obtain the user's explicit approval in the current conversation. Use `--course <id>` (repeatable or comma-separated) to limit submissions.
 - Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. The default path is `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override it with `QFNU_JWXT_CREDENTIALS_PATH`.
 - Credential precedence is command-line arguments, environment variables, then saved credentials. Saved credentials are separate from the session file. `jwxt logout` preserves credentials by default; remove them with `jwxt forget-credentials` or `jwxt logout --forget-credentials`.
-- When `jwxt status` detects an expired session and saved credentials exist, it attempts one automatic login only if `QFNU_OCR_URL` is configured. Without OCR it returns instructions for a manual captcha flow. A wrong password or an account logged in elsewhere stops retries immediately.
+- When `jwxt status` reports an expired session, never auto-login: run `jwxt captcha` for a fresh image and submit the reading with `jwxt login --captcha`. A wrong password or an account logged in elsewhere stops immediately.
 - Captcha policy, in priority order:
   1. Model vision, by default: run `jwxt captcha` to save a fresh PNG and login session, read it with model vision, then run `jwxt login --captcha "<captcha-text>"`. After a wrong or low-confidence reading, fetch a new captcha and retry, up to 3 complete attempts.
-  2. When model vision is unavailable, use the independent [ddddocr-vercel](https://github.com/w1ndys/ddddocr-vercel) service. Deploy it to Vercel, set `QFNU_OCR_URL` or pass `--ocr-url`, then run `jwxt login` without `--captcha`.
-  3. If deploying or accessing the independent service encounters network errors, do not retry repeatedly. Run `jwxt captcha`, show the image to the user, and submit the user's reading with `jwxt login --captcha "<user-reading>"`.
-  Never invent or guess captcha text. Never print the password.
+  2. When model vision is unavailable, show the same PNG to the user, let the user read it, and submit that reading with `jwxt login --captcha "<user-reading>"`.
+  `jwxt login` always requires `--captcha`: without it the command returns `captcha is required` and sends no request. There is no built-in OCR and no `--ocr-url` flag. Never invent or guess captcha text. Never print the password.
 - A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
 - For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Actual course selection or preselection remains prohibited. The cached public pre-course catalog, the live `jwxt xk` catalog, and public recommendation search are read-only and do not submit enrollment actions.
 
@@ -174,4 +172,4 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
 - Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.
 
-Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, OCR, the session file, grades, schedule, exam-arrangement parsing, training-program parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed.
+Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, the session file, grades, schedule, exam-arrangement parsing, training-program parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed.
