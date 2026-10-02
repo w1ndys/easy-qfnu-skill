@@ -12,6 +12,22 @@ def wants_help(args):
     return any(arg in HELP_FLAGS for arg in args)
 
 
+def command_usage(program, commands, suffix="", footer=""):
+    """按命令表渲染用法文本：program 例 "easy-qfnu jwc"。
+
+    表项字段：name、summary（必填），extra（可选，参数说明续行）。
+    """
+    names = "|".join(item["name"] for item in commands)
+    width = max(len(item["name"]) for item in commands) + 2
+    lines = ["Usage: " + program + " <" + names + ">" + suffix]
+    for item in commands:
+        lines.append("  " + item["name"].ljust(width) + item["summary"])
+        lines.extend(" " * (width + 2) + line for line in item.get("extra") or ())
+    if footer:
+        lines.append("  " + footer)
+    return "\n".join(lines) + "\n"
+
+
 def write_json(out, value):
     """把对象写成缩进 JSON 并换行。写出失败返回 1，成功返回 0。"""
     trace.attach(value)

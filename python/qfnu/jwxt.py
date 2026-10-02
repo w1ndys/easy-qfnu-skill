@@ -18,7 +18,7 @@ from .jwxt_grades import grades
 from .jwxt_program import program
 from .jwxt_schedule import schedule
 from .jwxt_xk import run_jwxt_xk
-from .result import failure, success, wants_help, write_json
+from .result import command_usage, failure, success, wants_help, write_json
 
 
 def _action_captcha(client, command):
@@ -125,12 +125,14 @@ def run_jwxt(args, out, inp=None):
 
 
 def usage_jwxt(out):
-    names = "|".join(item["name"] for item in JWXT_COMMANDS)
-    lines = ["Usage: easy-qfnu jwxt <" + names + ">"]
-    lines += ["  " + item["name"].ljust(20) + item["summary"] for item in JWXT_COMMANDS]
-    lines.append("  别名：status=whoami，program=pyfa")
     try:
-        out.write("\n".join(lines) + "\n")
+        out.write(
+            command_usage(
+                "easy-qfnu jwxt",
+                JWXT_COMMANDS,
+                footer="别名：status=whoami，program=pyfa",
+            )
+        )
     except OSError:
         return 1
     return 2

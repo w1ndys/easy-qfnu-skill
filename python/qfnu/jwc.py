@@ -7,7 +7,7 @@ from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, wants_help, write_json
+from .result import command_usage, failure, success, wants_help, write_json
 
 JWC_BASE = "https://jwc.qfnu.edu.cn"
 USER_AGENT = "easy-qfnu-skill/easy-qfnu"
@@ -400,33 +400,59 @@ def request_jwc(method, target, body, headers):
     return data.decode("utf-8", errors="replace"), final_url
 
 
+def _action_list(args, out):
+    del out
+    return list_jwc(args)
+
+
+def _action_get(args, out):
+    del out
+    if len(args) < 1:
+        raise ValueError("get requires a URL or info path")
+    return article_jwc(args[0])
+
+
+def _action_search(args, out):
+    del out
+    return search_jwc(args)
+
+
+def _action_channels(args, out):
+    del args, out
+    return success("jwc", {"channels": CHANNELS})
+
+
+# 单一来源：用法文本和分发都读这张表。加动作 = 加一行。
+# 处理器签名统一为 (args, out)。
+JWC_COMMANDS = (
+    {"name": "list", "summary": "按频道翻页列出通知", "run": _action_list},
+    {"name": "get", "summary": "读取一篇文章正文", "run": _action_get},
+    {"name": "search", "summary": "站内搜索通知", "run": _action_search},
+    {"name": "channels", "summary": "列出可用频道", "run": _action_channels},
+)
+JWC_INDEX = {item["name"]: item for item in JWC_COMMANDS}
+
+
+def jwc_command(action):
+    """按名字取命令表条目。未知动作返回 None。"""
+    return JWC_INDEX.get(action)
+
+
 def run_jwc(args, out):
     if len(args) == 0 or wants_help(args):
         return usage_jwc(out)
+    entry = jwc_command(args[0])
+    if entry is None:
+        return write_json(out, jwc_failure(ValueError("unknown action: " + args[0])))
     result = None
     err = None
     try:
-        result = dispatch_jwc(args)
+        result = entry["run"](args[1:], out)
     except (JWCError, ValueError, OSError, TypeError) as caught:
         err = caught
     if err is not None:
         return write_json(out, jwc_failure(err))
     return write_json(out, result)
-
-
-def dispatch_jwc(args):
-    action = args[0]
-    if action == "channels":
-        return success("jwc", {"channels": CHANNELS})
-    if action == "list":
-        return list_jwc(args[1:])
-    if action == "search":
-        return search_jwc(args[1:])
-    if action == "get":
-        if len(args) < 2:
-            raise ValueError("get requires a URL or info path")
-        return article_jwc(args[1])
-    raise ValueError("unknown action: " + action)
 
 
 def jwc_failure(err):
@@ -437,7 +463,7 @@ def jwc_failure(err):
 
 def usage_jwc(out):
     try:
-        out.write("Usage: easy-qfnu jwc <list|get|search|channels> [options]\n")
+        out.write(command_usage("easy-qfnu jwc", JWC_COMMANDS, " [options]"))
     except OSError:
         return 1
     return 2

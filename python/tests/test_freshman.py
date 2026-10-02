@@ -46,7 +46,9 @@ class FreshmanTest(unittest.TestCase):
         out = io.StringIO()
         code = run(["freshman", "--help"], out, io.StringIO())
         self.assertEqual(code, 2)
-        self.assertIn("easy-qfnu freshman search", out.getvalue())
+        text = out.getvalue()
+        self.assertIn("easy-qfnu freshman", text)
+        self.assertIn("--page-size 20", text)
 
 
 if __name__ == "__main__":

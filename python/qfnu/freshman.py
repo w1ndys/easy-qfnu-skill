@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, wants_help, write_json
+from .result import command_usage, failure, wants_help, write_json
 
 FRESHMAN_API = "https://freshman-exam.easy-qfnu.top/api/questions"
 REQUEST_TIMEOUT = 30
@@ -114,12 +114,34 @@ def get_json_body(target):
     return data.decode("utf-8", errors="replace"), status
 
 
+def _search_action(args, out):
+    return run_freshman_search(args, out)
+
+
+# 单一来源：用法文本和分发都读这张表。加动作 = 加一行。
+# 处理器签名统一为 (args, out)。
+FRESHMAN_COMMANDS = (
+    {
+        "name": "search",
+        "summary": "按关键词搜索题库：<keyword> [--page 1] [--page-size 20]",
+        "run": _search_action,
+    },
+)
+FRESHMAN_INDEX = {item["name"]: item for item in FRESHMAN_COMMANDS}
+
+
+def freshman_command(action):
+    """按名字取命令表条目。未知动作返回 None。"""
+    return FRESHMAN_INDEX.get(action)
+
+
 def run_freshman(args, out):
     if len(args) == 0 or wants_help(args):
         return usage_freshman(out)
-    if args[0] != "search":
+    entry = freshman_command(args[0])
+    if entry is None:
         return write_json(out, failure("freshman", "unknown action: " + args[0], ""))
-    return run_freshman_search(args[1:], out)
+    return entry["run"](args[1:], out)
 
 
 def run_freshman_search(args, out):
@@ -142,7 +164,7 @@ def freshman_failure(err):
 
 def usage_freshman(out):
     try:
-        out.write("Usage: easy-qfnu freshman search <keyword> [--page 1] [--page-size 20]\n")
+        out.write(command_usage("easy-qfnu freshman", FRESHMAN_COMMANDS))
     except OSError:
         return 1
     return 2

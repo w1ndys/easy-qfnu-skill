@@ -4,7 +4,7 @@ import json
 import re
 import unittest
 
-from qfnu import cli, jwc, jwxt, jwxt_xk
+from qfnu import cli, freshman, jwc, jwxt, jwxt_xk, precourse, recommendation
 from qfnu.cli import run
 from qfnu.version import VERSION
 
@@ -72,30 +72,38 @@ def dispatched_actions(func, pattern):
 class UsageDriftTest(unittest.TestCase):
     """用法文本里的子命令列表 = 实际能分发的子命令。"""
 
-    def test_jwxt_usage_comes_from_command_table(self):
-        out = io.StringIO()
-        jwxt.usage_jwxt(out)
-        self.assertEqual(
-            usage_actions(out.getvalue()),
-            {item["name"] for item in jwxt.JWXT_COMMANDS},
+    def test_family_usage_comes_from_command_table(self):
+        families = (
+            (jwxt, jwxt.usage_jwxt, jwxt.JWXT_COMMANDS, jwxt.jwxt_command),
+            (jwc, jwc.usage_jwc, jwc.JWC_COMMANDS, jwc.jwc_command),
+            (freshman, freshman.usage_freshman, freshman.FRESHMAN_COMMANDS, freshman.freshman_command),
+            (
+                precourse,
+                precourse.usage_precourse,
+                precourse.PRECOURSE_COMMANDS,
+                precourse.precourse_command,
+            ),
+            (
+                recommendation,
+                recommendation.usage_recommendation,
+                recommendation.RECOMMENDATION_COMMANDS,
+                recommendation.recommendation_command,
+            ),
         )
+        for module, usage, table, lookup in families:
+            with self.subTest(family=module.__name__):
+                out = io.StringIO()
+                usage(out)
+                self.assertEqual(usage_actions(out.getvalue()), {item["name"] for item in table})
+                for item in table:
+                    self.assertIs(lookup(item["name"]), item)
+                    if item.get("kind", "action") == "action":
+                        self.assertIsNotNone(item["run"])
+                self.assertIsNone(lookup("not-a-command"))
 
-    def test_jwxt_command_table_resolves_names_and_aliases(self):
-        for item in jwxt.JWXT_COMMANDS:
-            self.assertIs(jwxt.jwxt_command(item["name"]), item)
-            if item["kind"] == "action":
-                self.assertIsNotNone(item["run"])
+    def test_jwxt_table_resolves_aliases(self):
         self.assertIs(jwxt.jwxt_command("whoami"), jwxt.jwxt_command("status"))
         self.assertIs(jwxt.jwxt_command("pyfa"), jwxt.jwxt_command("program"))
-        self.assertIsNone(jwxt.jwxt_command("not-a-command"))
-
-    def test_jwc_usage_matches_dispatch(self):
-        out = io.StringIO()
-        jwc.usage_jwc(out)
-        self.assertEqual(
-            usage_actions(out.getvalue()),
-            dispatched_actions(jwc.dispatch_jwc, r'action == "([a-z-]+)"'),
-        )
 
     def test_xk_usage_matches_parser(self):
         out = io.StringIO()

@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, wants_help, write_json
+from .result import command_usage, failure, success, wants_help, write_json
 from .version import VERSION
 
 DEFAULT_ENDPOINT = "https://precourse.easy-qfnu.top/v1/precourse"
@@ -41,32 +41,63 @@ class PrecourseClientError(Exception):
         self.hint = hint
 
 
+def _action_search(args, out):
+    return run_precourse_search(args, out)
+
+
+def _action_meta(args, out):
+    if len(args) > 0:
+        return write_precourse_failure(out, "meta 不接受额外参数", "")
+    return request_precourse("meta", None, out)
+
+
+def _action_popular(args, out):
+    return run_precourse_popular(args, out)
+
+
+# 单一来源：用法文本和分发都读这张表。加动作 = 加一行。
+# 处理器签名统一为 (args, out)。
+PRECOURSE_COMMANDS = (
+    {
+        "name": "search",
+        "summary": "按条件查询预选课缓存（可只给关键词）",
+        "extra": (
+            "[keyword] [--course-code value] [--course-name value] [--teacher-name value]",
+            "[--course-nature value] [--course-attr value] [--college value]",
+            "[--schedule-time value] [--location value] [--campus value]",
+        ),
+        "run": _action_search,
+    },
+    {"name": "meta", "summary": "查看缓存数据时间与条数", "run": _action_meta},
+    {
+        "name": "popular",
+        "summary": "查看热门统计",
+        "extra": ("[--field teacherName|courseName|college]",),
+        "run": _action_popular,
+    },
+)
+PRECOURSE_INDEX = {item["name"]: item for item in PRECOURSE_COMMANDS}
+
+
+def precourse_command(action):
+    """按名字取命令表条目。未知动作返回 None。"""
+    return PRECOURSE_INDEX.get(action)
+
+
 def run_precourse(args, out):
     if len(args) == 0 or wants_help(args):
         return usage_precourse(out)
     action = args[0]
-    if action == "search":
-        return run_precourse_search(args[1:], out)
-    if action == "meta":
-        if len(args) > 1:
-            return write_precourse_failure(out, "meta 不接受额外参数", "")
-        return request_precourse("meta", None, out)
-    if action == "popular":
-        return run_precourse_popular(args[1:], out)
-    return write_precourse_failure(out, "unknown action: " + action, "支持 search、meta、popular")
+    entry = precourse_command(action)
+    if entry is None:
+        hint = "支持 " + "、".join(item["name"] for item in PRECOURSE_COMMANDS)
+        return write_precourse_failure(out, "unknown action: " + action, hint)
+    return entry["run"](args[1:], out)
 
 
 def usage_precourse(out):
-    text = (
-        "Usage: easy-qfnu precourse <search|meta|popular>\n"
-        "  easy-qfnu precourse search [keyword] [--course-code value] [--course-name value] [--teacher-name value]\n"
-        "    [--course-nature value] [--course-attr value] [--college value] [--schedule-time value]\n"
-        "    [--location value] [--campus value]\n"
-        "  easy-qfnu precourse meta\n"
-        "  easy-qfnu precourse popular --field <teacherName|courseName|college>\n"
-    )
     try:
-        out.write(text)
+        out.write(command_usage("easy-qfnu precourse", PRECOURSE_COMMANDS))
     except OSError:
         return 1
     return 2

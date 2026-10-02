@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, wants_help, write_json
+from .result import command_usage, failure, success, wants_help, write_json
 from .version import VERSION
 
 DEFAULT_ENDPOINT = "https://recommend.easy-qfnu.top/v1/recommendation"
@@ -27,17 +27,40 @@ class RecommendationClientError(Exception):
         self.hint = hint
 
 
+def _action_search(args, out):
+    return run_recommendation_search(args, out)
+
+
+# 单一来源：用法文本和分发都读这张表。加动作 = 加一行。
+# 处理器签名统一为 (args, out)。
+RECOMMENDATION_COMMANDS = (
+    {
+        "name": "search",
+        "summary": "按课程或教师查询推荐：[--course value] [--teacher value] [--top 20]",
+        "run": _action_search,
+    },
+)
+RECOMMENDATION_INDEX = {item["name"]: item for item in RECOMMENDATION_COMMANDS}
+
+
+def recommendation_command(action):
+    """按名字取命令表条目。未知动作返回 None。"""
+    return RECOMMENDATION_INDEX.get(action)
+
+
 def run_recommendation(args, out):
     if len(args) == 0 or wants_help(args):
         return usage_recommendation(out)
-    if args[0] == "search":
-        return run_recommendation_search(args[1:], out)
-    return write_recommendation_failure(out, "unknown action: " + args[0], "支持 search")
+    entry = recommendation_command(args[0])
+    if entry is None:
+        hint = "支持 " + "、".join(item["name"] for item in RECOMMENDATION_COMMANDS)
+        return write_recommendation_failure(out, "unknown action: " + args[0], hint)
+    return entry["run"](args[1:], out)
 
 
 def usage_recommendation(out):
     try:
-        out.write("Usage: easy-qfnu recommendation search [--course value] [--teacher value] [--top 20]\n")
+        out.write(command_usage("easy-qfnu recommendation", RECOMMENDATION_COMMANDS))
     except OSError:
         return 1
     return 2
