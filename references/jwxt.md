@@ -134,7 +134,7 @@ All paths are under `http://zhjw.qfnu.edu.cn`. Reuse the login Cookie jar. The C
 | Standardized-exam grades (`等级考试成绩`) | `/jsxsd/kscj/djkscj_list` | GET 200 |
 | Semester schedule (`学期理论课表`) | `/jsxsd/xskb/xskb_list.do` | Read-only GET. Parameters: `xnxq01id` (semester), `zc` (week; empty means all), `sfFD=1`, optional `kbjcmsid` (period scheme). Cells are in `#kbtable` / `.kbcontent`. CLI: `jwxt schedule --semester <semester> [--week <week>]`. |
 | Today's homepage schedule fragment (`首页当日课表`) | `/jsxsd/framework/main_index_loadkb.jsp?rq=YYYY-MM-DD` | Loaded by `xsMain_new` using jQuery `.load`; optional `sjmsValue`. |
-| Exam arrangements (`考试安排查询`) | `/jsxsd/xsks/xsksap_query` | GET 200 |
+| Exam arrangements (`考试安排查询`) | `/jsxsd/xsks/xsksap_query` | GET 200. Query shell only; the list comes from POST `/jsxsd/xsks/xsksap_list`. CLI: `jwxt exams`. |
 | Course-selection center (`学生选课中心`) | `/jsxsd/xsxk/xklc_list` | CLI `jwxt xk rounds` lists open rounds. `jwxt xk search` enters a round only to query course JSON; never call `*Oper` selection URLs. |
 | Course-selection results (`选课结果查询`) | `/jsxsd/xkgl/xsxkjgcx` | GET 200 |
 | Academic calendar (`教学周历`) | `/jsxsd/jxzl/jxzl_query` | GET 200 |
@@ -156,6 +156,18 @@ GET /jsxsd/xskb/xskb_list.do?xnxq01id=2025-2026-3&zc=&sfFD=1&kbjcmsid=94786EE0AB
 Use the page's currently selected `kbjcmsid`; never hard-code it.
 
 `jwxt schedule` returns identical `items` and `schedule` arrays. Every non-empty cell contains `day`, the raw `period` text, `course_name` from the first line, detail `lines`, and joined `text`. Skip unknown weekday columns instead of guessing dates.
+
+Read-only exam-arrangement query, equivalent to `考试安排查询`: GET the shell to read the default semester, then POST the form the page submits (`ksapQueryForm.action = /jsxsd/xsks/xsksap_list`, `target=fcenter`).
+
+```text
+GET  /jsxsd/xsks/xsksap_query
+POST /jsxsd/xsks/xsksap_list
+     xqlbmc=<期初|期中|期末|空> dqxnxq= ckbz= sxxnxq= xnxqid=<semester> xqlb=<1|2|3|空>
+```
+
+`#xnxqid` lists all semesters with the current one `selected`; `jwxt exams` reuses that selection when `--semester` is omitted, so no semester is hard-coded. `sxxnxq`, `dqxnxq`, and `ckbz` are empty in the served HTML and stay empty, exactly like the browser submission. The response holds `table#dataList`: header `序号 校区 考试场次 课程编号 课程名称 授课教师 考试时间 考场 座位号 准考证号 备注 操作`, and one row per exam. Map by header text, ignore `序号` and `操作`, and drop cells that are empty. When the student has no arrangements the table has a single `<td colspan="10">未查询到数据</td>` row; the CLI then returns `count: 0`, empty `items`/`exams`, and `message: 未查到数据` so the agent can answer directly instead of showing an empty table. Never POST 缓考 / 补考申请 (`ksap_bz.do`, application URLs) or any other form on this page.
+
+If the response is neither the `dataList` table nor a login page — for example a maintenance page or a changed layout — `jwxt exams` fails with `exam list page is not recognised` instead of reporting `未查到数据`, so a structural change cannot be mistaken for "no arrangements".
 
 ### Sidebar menu from `xsMain.jsp`
 

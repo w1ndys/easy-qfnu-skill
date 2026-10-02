@@ -12,6 +12,7 @@ from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_message
 from qfnu.jwxt_auth import status as jwxt_status
 from qfnu.jwxt_client import JWXT_BASE, JWXTClient, cookies_for_url, make_cookie
+from qfnu.jwxt_exams import exams, parse_exams, selected_semester, term_category
 from qfnu.jwxt_grades import grades, parse_grades
 from qfnu.jwxt_program import parse_program, program
 from qfnu.jwxt_schedule import parse_schedule, schedule, schedule_url
@@ -588,6 +589,264 @@ def start_redirect_server():
 def stop_server(server):
     server.shutdown()
     server.server_close()
+
+
+EXAM_QUERY_PAGE = """
+<th>学年学期：</th>
+<select id="xnxqid" name="xnxqid" style="width: 150px;">
+\t<option selected value="2026-2027-1">2026-2027-1</option>
+\t<option  value="2025-2026-3">2025-2026-3</option>
+</select>
+"""
+
+
+EXAM_TABLE = """
+<table id="dataList" width="100%" border="0" cellspacing="0" cellpadding="0" class="Nsb_r_list Nsb_table">
+<tr>
+<th class="Nsb_r_list_thb" style="width: 35px;">序号</th>
+<th class="Nsb_r_list_thb" style="width: 80px;">校区</th>
+<th class="Nsb_r_list_thb" style="width: 120px;">考试场次</th>
+<th class="Nsb_r_list_thb" style="width: 120px;">课程编号</th>
+<th class="Nsb_r_list_thb" style="width: 160px;">课程名称</th>
+<th class="Nsb_r_list_thb" style="width: 110px;">授课教师</th>
+<th class="Nsb_r_list_thb">考试时间</th>
+<th class="Nsb_r_list_thb" style="width: 140px;">考场</th>
+<th class="Nsb_r_list_thb" style="width: 60px;">座位号</th>
+<th class="Nsb_r_list_thb" style="width: 120px;">准考证号</th>
+<th class="Nsb_r_list_thb" style="width: 120px;">备注</th>
+<th class="Nsb_r_list_thb" style="width: 50px;">操作</th>
+</tr>
+<tr><td>1</td><td>曲阜</td><td>期末考试</td><td>CS101</td><td>程序设计</td><td>张三</td><td>2026-07-06 08:00-10:00</td><td>综合楼101</td><td>12</td><td>2023000000</td><td></td><td></td></tr>
+<tr><td>2</td><td>日照</td><td>期末考试</td><td>MA102</td><td>高等数学</td><td>李四</td><td>2026-07-08 14:00-16:00</td><td>教学楼202</td><td>7</td><td>2023000000</td><td><a href="#">查看</a></td><td></td></tr>
+</table>
+"""
+
+
+EXAM_EMPTY_TABLE = """
+<table id="dataList" width="100%" border="0" cellspacing="0" cellpadding="0" class="Nsb_r_list Nsb_table">
+<tr>
+<th class="Nsb_r_list_thb">序号</th>
+<th class="Nsb_r_list_thb">校区</th>
+<th class="Nsb_r_list_thb">课程名称</th>
+<th class="Nsb_r_list_thb">考试时间</th>
+<th class="Nsb_r_list_thb">操作</th>
+</tr>
+<tr><td colspan="10">未查询到数据</td></tr>
+</table>
+"""
+
+
+class JWXTExamsTest(unittest.TestCase):
+    def test_term_category_accepts_code_and_label(self):
+        self.assertEqual(term_category("3"), ("3", "期末"))
+        self.assertEqual(term_category("期末"), ("3", "期末"))
+        self.assertEqual(term_category(""), ("", ""))
+        self.assertEqual(term_category("未知"), ("未知", ""))
+
+    def test_selected_semester_prefers_selected_option(self):
+        self.assertEqual(selected_semester(EXAM_QUERY_PAGE), "2026-2027-1")
+        self.assertEqual(selected_semester("<select id='xnxqid'><option value='2025-2026-3'>x</option></select>"), "2025-2026-3")
+        self.assertEqual(selected_semester("<html></html>"), "")
+
+    def test_parse_exams_maps_known_headers_and_skips_index_and_action(self):
+        _rows, items, notice = parse_exams(EXAM_TABLE)
+        self.assertEqual(notice, "")
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["course_id"], "CS101")
+        self.assertEqual(items[0]["course_name"], "程序设计")
+        self.assertEqual(items[0]["campus"], "曲阜")
+        self.assertEqual(items[0]["session"], "期末考试")
+        self.assertEqual(items[0]["exam_time"], "2026-07-06 08:00-10:00")
+        self.assertEqual(items[0]["room"], "综合楼101")
+        self.assertEqual(items[0]["seat_no"], "12")
+        self.assertEqual(items[0]["admission_no"], "2023000000")
+        self.assertNotIn("序号", items[0])
+        self.assertNotIn("操作", items[0])
+        self.assertNotIn("remark", items[0])
+        self.assertEqual(items[1]["remark"], "查看")
+
+    def test_parse_exams_reports_no_data_notice(self):
+        _rows, items, notice = parse_exams(EXAM_EMPTY_TABLE)
+        self.assertEqual(items, [])
+        self.assertEqual(notice, "未查询到数据")
+
+    def test_parse_exams_ignores_tables_other_than_data_list(self):
+        raw = "<table><tr><td>无关</td></tr></table>" + EXAM_TABLE
+        _rows, items, _notice = parse_exams(raw)
+        self.assertEqual(len(items), 2)
+
+    def test_exams_requires_login_page(self):
+        client = JWXTClient()
+        client.text = lambda *_args, **_kwargs: (
+            200,
+            "http://zhjw.qfnu.edu.cn/jsxsd/xsks/xsksap_query",
+            "请输入账号 请输入密码 请输入验证码",
+        )
+        with self.assertRaises(Exception) as caught:
+            exams(client, "2026-2027-1", "")
+        self.assertEqual(caught.exception.message, "exam query page requires login")
+
+    def test_exams_posts_form_and_returns_items(self):
+        calls = []
+        client = JWXTClient()
+
+        def fake_text(method, target, body=None, headers=None, same_origin=False):
+            del same_origin
+            calls.append((method, target, body, headers))
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, EXAM_TABLE
+
+        client.text = fake_text
+        result = exams(client, "2026-2027-1", "期末")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["semester"], "2026-2027-1")
+        self.assertEqual(result["term_category"], "3")
+        self.assertEqual(result["term_category_name"], "期末")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["items"], result["exams"])
+        self.assertNotIn("message", result)
+        method, target, body, headers = calls[1]
+        self.assertEqual(method, "POST")
+        self.assertTrue(target.endswith("/jsxsd/xsks/xsksap_list"))
+        posted = body.decode("utf-8")
+        self.assertIn("xnxqid=2026-2027-1", posted)
+        self.assertIn("xqlb=3", posted)
+        self.assertIn("xqlbmc=%E6%9C%9F%E6%9C%AB", posted)
+        self.assertIn("application/x-www-form-urlencoded", headers["Content-Type"])
+        self.assertIn("/xsks/xsksap_query", headers["Referer"])
+
+    def test_exams_uses_query_page_semester_when_missing(self):
+        client = JWXTClient()
+
+        def fake_text(method, target, body=None, headers=None, same_origin=False):
+            del body, headers, same_origin
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, EXAM_TABLE
+
+        client.text = fake_text
+        result = exams(client, "", "")
+        self.assertEqual(result["semester"], "2026-2027-1")
+
+    def test_exams_no_data_returns_message(self):
+        client = JWXTClient()
+
+        def fake_text(method, target, body=None, headers=None, same_origin=False):
+            del body, headers, same_origin
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, EXAM_EMPTY_TABLE
+
+        client.text = fake_text
+        result = exams(client, "2026-2027-1", "")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["message"], "未查到数据")
+
+    def test_exams_unrecognised_page_raises_instead_of_no_data(self):
+        client = JWXTClient()
+
+        def fake_text(method, target, body=None, headers=None, same_origin=False):
+            del body, headers, same_origin
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, "<html><body>系统维护中</body></html>"
+
+        client.text = fake_text
+        with self.assertRaises(Exception) as caught:
+            exams(client, "2026-2027-1", "")
+        self.assertEqual(caught.exception.message, "exam list page is not recognised")
+
+    def test_cli_exams_returns_items_and_reports_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+
+        def fake_text(self, method, target, body=None, headers=None, same_origin=False):
+            del self, body, headers, same_origin
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, EXAM_TABLE
+
+        JWXTClient.text = fake_text
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write('{"cookies":[]}\n')
+                out = io.StringIO()
+                code = run_jwxt(
+                    ["exams", "--semester", "2026-2027-1", "--term-category", "期末", "--session-path", path],
+                    out,
+                )
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["count"], 2)
+        self.assertEqual(body["items"][1]["course_name"], "高等数学")
+        self.assertEqual(events, [("jwxt.exams", "success")])
+
+    def test_cli_exams_no_data_reports_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+
+        def fake_text(self, method, target, body=None, headers=None, same_origin=False):
+            del self, body, headers, same_origin
+            if method == "GET":
+                return 200, target, EXAM_QUERY_PAGE
+            return 200, target, EXAM_EMPTY_TABLE
+
+        JWXTClient.text = fake_text
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{}\n")
+                out = io.StringIO()
+                code = run_jwxt(["exams", "--session-path", path], out)
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["message"], "未查到数据")
+        self.assertEqual(events, [("jwxt.exams", "success")])
+
+    def test_cli_exams_login_failure_reports_usage(self):
+        events = []
+        original = telemetry.report_usage
+        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+        original_text = JWXTClient.text
+        JWXTClient.text = lambda *_args, **_kwargs: (
+            200,
+            "http://zhjw.qfnu.edu.cn/jsxsd/xsks/xsksap_query",
+            "请输入账号请输入密码请输入验证码",
+        )
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{}\n")
+                out = io.StringIO()
+                code = run_jwxt(["exams", "--session-path", path], out)
+        finally:
+            JWXTClient.text = original_text
+            telemetry.report_usage = original
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "exam query page requires login")
+        self.assertEqual(events, [("jwxt.exams", "failure")])
 
 
 if __name__ == "__main__":

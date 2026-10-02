@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、成绩、课表、评价、选课查询、中继、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、考试安排、评价、选课查询、中继、状态、退出和忘记凭据。"""
 
 import os
 import sys
@@ -14,6 +14,7 @@ from .jwxt_auth import (
 )
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
 from .jwxt_evaluation import evaluate, evaluations
+from .jwxt_exams import exams
 from .jwxt_grades import grades
 from .jwxt_program import program
 from .jwxt_relay import run_jwxt_relay_command
@@ -21,7 +22,7 @@ from .jwxt_schedule import schedule
 from .jwxt_xk import run_jwxt_xk
 from .result import failure, success, write_json
 
-USAGE_ACTIONS = ("grades", "schedule", "evaluations", "evaluate", "program", "pyfa")
+USAGE_ACTIONS = ("grades", "schedule", "exams", "evaluations", "evaluate", "program", "pyfa")
 
 
 def run_jwxt(args, out, inp=None):
@@ -63,7 +64,7 @@ def run_jwxt(args, out, inp=None):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|program|evaluations|evaluate|status|logout|forget-credentials|relay|xk>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|exams|program|evaluations|evaluate|status|logout|forget-credentials|relay|xk>\n"
         )
     except OSError:
         return 1
@@ -83,6 +84,7 @@ def parse_jwxt_command(action, args):
         "week": "",
         "mode": "",
         "keyword": "",
+        "xqlb": "",
         "score": 89,
         "courses": [],
         "confirm": False,
@@ -143,6 +145,8 @@ def set_value_option(command, arg, value):
         command["week"] = value
     elif arg == "--kbjcmsid":
         command["mode"] = value
+    elif arg == "--xqlb" or arg == "--term-category":
+        command["xqlb"] = value
     elif arg == "--score" or arg == "--target-score":
         try:
             command["score"] = int(value)
@@ -212,6 +216,8 @@ def execute_jwxt(client, command):
         return grades(client, command["semester"])
     if action == "schedule":
         return schedule(client, command["semester"], command["week"], command["mode"])
+    if action == "exams":
+        return exams(client, command["semester"], command["xqlb"])
     if action == "program" or action == "pyfa":
         return program(client, command["keyword"])
     if action == "evaluations":
