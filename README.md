@@ -1,8 +1,11 @@
 # easy-qfnu-skill (曲奇skill)
 
+- 仓库与来源：https://github.com/w1ndys/easy-qfnu-skill（public）。本 skill 的源码、版本 Tag 与公开 Release 都以此仓库为准；使用前先看该仓库的最新 Release/Tag。
+- 本地版本：本目录的 `VERSION` 文件。
+
 面向 AI agents 的曲阜师范大学教务查询skill工具。本 skill 服务于曲阜师范大学师生。创作者是 22 级某师哥。这是个人兴趣爱好开发的工具，与学校官网无关。
 
-A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission and recommendation submission are supported only after an explicit confirmation gate.
+A QFNU campus-system skill for AI agents. It is under rapid development, so features, commands, and supported scopes may change frequently. Student-evaluation submission is supported only after an explicit confirmation gate; feedback and recommendation submission are currently offline.
 
 The skill instructions are written primarily in English, but every user-facing conversation produced while the skill is active must be in Chinese. Commands, URLs, JSON fields, and source-system text remain unchanged where translation would reduce correctness.
 
@@ -20,7 +23,7 @@ Current coverage:
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
 
-Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions and recommendation submissions; it never performs course selection or preselection (`选课`/`预选课`).
+Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; feedback and recommendation submission are offline, and it never performs course selection or preselection (`选课`/`预选课`).
 
 ## Skill layout
 
