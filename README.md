@@ -116,7 +116,6 @@ easy-qfnu jwxt login --save-credentials yes  # use arguments, environment, or sa
 easy-qfnu jwxt logout  # clear the session; preserve credentials
 easy-qfnu jwxt logout --forget-credentials  # clear session and credentials
 easy-qfnu jwxt forget-credentials  # clear saved credentials only
-easy-qfnu jwxt relay recommendation  # stdin JSON after confirmation; requires login
 ```
 
 When `jwxt status` detects an expired session, it attempts one automatic login only if saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Password errors and accounts logged in elsewhere stop immediately without repeated retries.

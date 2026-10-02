@@ -1,9 +1,8 @@
-"""教务命令：验证码、登录、成绩、课表、考试安排、评价、选课查询、中继、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、考试安排、评价、选课查询、状态、退出和忘记凭据。"""
 
 import os
 import sys
 
-from . import telemetry
 from .jwxt_auth import (
     captcha,
     clear_credentials_file,
@@ -17,12 +16,9 @@ from .jwxt_evaluation import evaluate, evaluations
 from .jwxt_exams import exams
 from .jwxt_grades import grades
 from .jwxt_program import program
-from .jwxt_relay import run_jwxt_relay_command
 from .jwxt_schedule import schedule
 from .jwxt_xk import run_jwxt_xk
 from .result import failure, success, write_json
-
-USAGE_ACTIONS = ("grades", "schedule", "exams", "evaluations", "evaluate", "program", "pyfa")
 
 
 def run_jwxt(args, out, inp=None):
@@ -31,7 +27,7 @@ def run_jwxt(args, out, inp=None):
     if len(args) == 0 or args[0] == "--help":
         return usage_jwxt(out)
     if args[0] == "relay":
-        return run_jwxt_relay_command(args, out, inp)
+        return write_json(out, relay_offline())
     if args[0] == "xk":
         return run_jwxt_xk(args[1:], out)
     if args[0] == "forget-credentials":
@@ -64,7 +60,7 @@ def run_jwxt(args, out, inp=None):
 def usage_jwxt(out):
     try:
         out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|exams|program|evaluations|evaluate|status|logout|forget-credentials|relay|xk>\n"
+            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|exams|program|evaluations|evaluate|status|logout|forget-credentials|xk>\n"
         )
     except OSError:
         return 1
@@ -237,23 +233,20 @@ def login_jwxt(client, command):
     return login(client, username, password, command["captcha"], command["save"])
 
 
+def relay_offline():
+    """反馈与推荐提交的中转已下线：直接引导用户加群。"""
+    return failure(
+        "jwxt",
+        "反馈与推荐提交暂时不可用",
+        "请加入 QQ 群 1087015770（2 群，推荐）或 742726649（1 群）联系群主",
+    )
+
+
 def write_jwxt_result(action, result, err, out):
     if err is not None:
-        if action in USAGE_ACTIONS:
-            telemetry.report_usage(usage_feature(action), "failure")
         if isinstance(err, JWXTError):
             payload = failure("jwxt", err.message, err.hint)
         else:
             payload = failure("jwxt", str(err), "请检查网络和本地会话后重试")
         return write_json(out, payload)
-    if action == "login":
-        telemetry.report_login_success(result)
-    elif action in USAGE_ACTIONS:
-        telemetry.report_usage(usage_feature(action), "success")
     return write_json(out, result)
-
-
-def usage_feature(action):
-    if action == "pyfa":
-        return "jwxt.program"
-    return "jwxt." + action

@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from . import telemetry, trace
+from . import trace
 from .result import failure, write_json
 
 FRESHMAN_API = "https://freshman-exam.easy-qfnu.top/api/questions"
@@ -129,7 +129,6 @@ def run_freshman_search(args, out):
         result = query_freshman(parse_freshman_search(args))
     except (FreshmanError, ValueError, OSError, TypeError) as caught:
         err = caught
-    telemetry.report_usage("freshman.search", telemetry.usage_status(err))
     if err is not None:
         return write_json(out, freshman_failure(err))
     return write_json(out, result)

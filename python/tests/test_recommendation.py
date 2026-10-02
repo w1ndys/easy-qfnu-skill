@@ -9,7 +9,6 @@ from qfnu import recommendation
 from qfnu.cli import run
 
 ORIGINAL_ENDPOINT = recommendation.endpoint
-ORIGINAL_REPORT = recommendation.report_recommendation_usage
 SERVER_STATE = {"status": 200, "body": "{}", "paths": [], "auth": "", "cookie": ""}
 
 
@@ -41,16 +40,6 @@ def stop_server(server):
     server.server_close()
 
 
-def capture_usage():
-    events = []
-
-    def fake(operation, status):
-        events.append(operation + ":" + status)
-
-    recommendation.report_recommendation_usage = fake
-    return events
-
-
 class RecommendationTest(unittest.TestCase):
     def setUp(self):
         SERVER_STATE["status"] = 200
@@ -61,10 +50,8 @@ class RecommendationTest(unittest.TestCase):
 
     def tearDown(self):
         recommendation.endpoint = ORIGINAL_ENDPOINT
-        recommendation.report_recommendation_usage = ORIGINAL_REPORT
 
     def test_search_builds_query_and_returns_items(self):
-        events = capture_usage()
         SERVER_STATE["body"] = (
             '{"code":"OK","data":{"count":1,"updated_at":"2026-09-08T00:00:00Z","version":"abc",'
             '"items":[{"course_name":"高等数学","teacher_name":"张老师","year":"2025-2026",'
@@ -95,10 +82,8 @@ class RecommendationTest(unittest.TestCase):
         self.assertEqual(body["source"], "recommendation")
         self.assertEqual(body["count"], 1)
         self.assertEqual(len(body["items"]), 1)
-        self.assertEqual(events, ["search:success"])
 
     def test_cli_dispatch_defaults_top(self):
-        events = capture_usage()
         SERVER_STATE["body"] = (
             '{"code":"OK","data":{"count":0,"items":[],"updated_at":"2026-09-08T00:00:00Z","version":"local"}}'
         )
@@ -116,7 +101,6 @@ class RecommendationTest(unittest.TestCase):
         self.assertEqual(query.get("teacher"), ["王"])
         self.assertEqual(query.get("top"), ["20"])
         self.assertIsNone(query.get("course"))
-        self.assertEqual(events, ["search:success"])
 
         out = io.StringIO()
         run(["recommendations", "search", "--teacher", "王"], out, io.StringIO())
@@ -125,18 +109,15 @@ class RecommendationTest(unittest.TestCase):
         self.assertIn("unknown command: recommendations", body["error"])
 
     def test_rejects_missing_conditions_and_remote_failure(self):
-        events = capture_usage()
         out = io.StringIO()
         code = recommendation.run_recommendation_search(["--course", " "], out)
         self.assertNotEqual(code, 0)
         self.assertIn("至少提供一个非空", out.getvalue())
-        self.assertEqual(events, [])
 
         out = io.StringIO()
         code = recommendation.run_recommendation_search(["--course", "高数", "--top", "101"], out)
         self.assertNotEqual(code, 0)
         self.assertIn("1 到 100", out.getvalue())
-        self.assertEqual(events, [])
 
         SERVER_STATE["status"] = 400
         SERVER_STATE["body"] = '{"code":"INVALID_REQUEST","data":null,"message":"查询至少需要 course 或 teacher"}'
@@ -150,7 +131,6 @@ class RecommendationTest(unittest.TestCase):
             stop_server(server)
         self.assertNotEqual(code, 0)
         self.assertIn("查询至少需要 course 或 teacher", out.getvalue())
-        self.assertEqual(events, ["search:failure"])
 
 
 if __name__ == "__main__":

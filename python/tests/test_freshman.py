@@ -1,7 +1,7 @@
 import io
 import unittest
 
-from qfnu import freshman, telemetry
+from qfnu import freshman
 from qfnu.cli import run
 from qfnu.freshman import (
     normalize_freshman_response,
@@ -9,23 +9,8 @@ from qfnu.freshman import (
     parse_remote_error,
 )
 
-ORIGINAL_REPORT_USAGE = telemetry.report_usage
-
-
-def capture_usage():
-    events = []
-
-    def fake(feature, status):
-        events.append(feature + ":" + status)
-
-    telemetry.report_usage = fake
-    return events
-
 
 class FreshmanTest(unittest.TestCase):
-    def tearDown(self):
-        telemetry.report_usage = ORIGINAL_REPORT_USAGE
-
     def test_search_rejects_non_numeric_page(self):
         with self.assertRaises(ValueError) as ctx:
             parse_freshman_search(["校规", "--page", "later"])
@@ -52,24 +37,16 @@ class FreshmanTest(unittest.TestCase):
         self.assertEqual(err.hint, "请输入关键词")
         self.assertIsNone(parse_remote_error({"ok": True}))
 
-    def test_run_reports_search_attempts_only(self):
-        events = capture_usage()
+    def test_run_reports_invalid_page_failure(self):
         out = io.StringIO()
         freshman.run_freshman(["search", "校规", "--page", "later"], out)
         self.assertIn("--page must be an integer", out.getvalue())
-        self.assertEqual(events, ["freshman.search:failure"])
 
-        events.clear()
-        freshman.run_freshman(["bogus"], out)
-        self.assertEqual(events, [])
-
-    def test_cli_dispatches_freshman_usage(self):
-        events = capture_usage()
+    def test_cli_dispatches_freshman_help(self):
         out = io.StringIO()
         code = run(["freshman", "--help"], out, io.StringIO())
         self.assertEqual(code, 2)
         self.assertIn("easy-qfnu freshman search", out.getvalue())
-        self.assertEqual(events, [])
 
 
 if __name__ == "__main__":

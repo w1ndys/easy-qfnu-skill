@@ -4,7 +4,6 @@ import json
 import re
 from urllib.parse import urlencode
 
-from . import telemetry
 from .jwxt_auth import contains_any, strip_tags
 from .jwxt_client import (
     XK_ENTER_URL,
@@ -77,12 +76,9 @@ def run_jwxt_xk(args, out):
     try:
         result = execute_xk(client, action, query)
     except JWXTError as exc:
-        telemetry.report_usage("jwxt.xk." + action, "failure")
         return write_json(out, failure("jwxt", exc.message, exc.hint))
     except OSError as exc:
-        telemetry.report_usage("jwxt.xk." + action, "failure")
         return write_json(out, failure("jwxt", str(exc), "请检查网络和本地会话后重试"))
-    telemetry.report_usage("jwxt.xk." + action, "success")
     return write_json(out, result)
 
 

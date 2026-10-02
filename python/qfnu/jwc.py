@@ -6,7 +6,7 @@ import re
 from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request
 
-from . import telemetry, trace
+from . import trace
 from .result import failure, success, write_json
 
 JWC_BASE = "https://jwc.qfnu.edu.cn"
@@ -405,14 +405,10 @@ def run_jwc(args, out):
         return usage_jwc(out)
     result = None
     err = None
-    feature = ""
     try:
-        result, feature = dispatch_jwc(args)
+        result = dispatch_jwc(args)
     except (JWCError, ValueError, OSError, TypeError) as caught:
         err = caught
-        feature = feature_for(args[0])
-    if feature != "":
-        telemetry.report_usage("jwc." + feature, telemetry.usage_status(err))
     if err is not None:
         return write_json(out, jwc_failure(err))
     return write_json(out, result)
@@ -421,22 +417,16 @@ def run_jwc(args, out):
 def dispatch_jwc(args):
     action = args[0]
     if action == "channels":
-        return success("jwc", {"channels": CHANNELS}), ""
+        return success("jwc", {"channels": CHANNELS})
     if action == "list":
-        return list_jwc(args[1:]), "list"
+        return list_jwc(args[1:])
     if action == "search":
-        return search_jwc(args[1:]), "search"
+        return search_jwc(args[1:])
     if action == "get":
         if len(args) < 2:
             raise ValueError("get requires a URL or info path")
-        return article_jwc(args[1]), "get"
+        return article_jwc(args[1])
     raise ValueError("unknown action: " + action)
-
-
-def feature_for(action):
-    if action == "list" or action == "search" or action == "get":
-        return action
-    return ""
 
 
 def jwc_failure(err):

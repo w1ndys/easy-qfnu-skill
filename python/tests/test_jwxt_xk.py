@@ -4,7 +4,6 @@ import os
 import tempfile
 import unittest
 
-from qfnu import telemetry
 from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_client import JWXTClient
 from qfnu.jwxt_xk import (
@@ -140,9 +139,6 @@ class JWXTXKParseTest(unittest.TestCase):
 
 class JWXTXKCLITest(unittest.TestCase):
     def test_cli_xk_rounds_returns_live_notice(self):
-        events = []
-        original_usage = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
         original = install_router({})
         try:
             with tempfile.TemporaryDirectory() as temp, SessionEnv(write_session(temp)):
@@ -150,14 +146,12 @@ class JWXTXKCLITest(unittest.TestCase):
                 code = run_jwxt(["xk", "rounds"], out)
         finally:
             JWXTClient.text = original
-            telemetry.report_usage = original_usage
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
         self.assertEqual(body["query_kind"], "live")
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["rounds"][0]["id"], "ABC123")
-        self.assertEqual(events, [("jwxt.xk.rounds", "success")])
 
     def test_cli_xk_search_locates_course_module(self):
         original = install_router({})

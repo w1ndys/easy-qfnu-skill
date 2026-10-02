@@ -4,7 +4,6 @@ import os
 import tempfile
 import unittest
 
-from qfnu import telemetry
 from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_client import JWXTClient
 from qfnu.jwxt_evaluation import (
@@ -130,10 +129,7 @@ class JWXTEvaluationParseTest(unittest.TestCase):
 
 
 class JWXTEvaluationCLITest(unittest.TestCase):
-    def test_cli_evaluations_returns_items_and_reports_usage(self):
-        events = []
-        original_usage = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_evaluations_returns_items(self):
         original = install_router(
             {
                 "xspj_find.do": (200, "http://zhjw.qfnu.edu.cn/jsxsd/xspj/xspj_find.do", FIND_HTML),
@@ -146,19 +142,14 @@ class JWXTEvaluationCLITest(unittest.TestCase):
                 code = run_jwxt(["evaluations", "--session-path", write_session(temp)], out)
         finally:
             JWXTClient.text = original
-            telemetry.report_usage = original_usage
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
         self.assertEqual(body["count"], 2)
         self.assertEqual(body["items"], body["evaluations"])
         self.assertEqual(body["items"][0]["course_name"], "高数")
-        self.assertEqual(events, [("jwxt.evaluations", "success")])
 
     def test_evaluations_requires_login_page(self):
-        events = []
-        original_usage = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
         original = install_router(
             {"xspj_find.do": (200, "http://zhjw.qfnu.edu.cn/jsxsd/xspj/xspj_find.do", "请输入账号 请输入密码 请输入验证码")}
         )
@@ -168,12 +159,10 @@ class JWXTEvaluationCLITest(unittest.TestCase):
                 code = run_jwxt(["evaluations", "--session-path", write_session(temp)], out)
         finally:
             JWXTClient.text = original
-            telemetry.report_usage = original_usage
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "evaluation page requires login")
-        self.assertEqual(events, [("jwxt.evaluations", "failure")])
 
     def test_evaluations_without_batch(self):
         original = install_router(
@@ -190,9 +179,6 @@ class JWXTEvaluationCLITest(unittest.TestCase):
 
     def test_cli_evaluate_is_dry_run_without_confirm(self):
         posts = []
-        events = []
-        original_usage = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
         original = install_router(
             {
                 "xspj_find.do": (200, "http://zhjw.qfnu.edu.cn/jsxsd/xspj/xspj_find.do", FIND_HTML),
@@ -207,7 +193,6 @@ class JWXTEvaluationCLITest(unittest.TestCase):
                 code = run_jwxt(["evaluate", "--session-path", write_session(temp)], out)
         finally:
             JWXTClient.text = original
-            telemetry.report_usage = original_usage
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
@@ -217,7 +202,6 @@ class JWXTEvaluationCLITest(unittest.TestCase):
         self.assertEqual(body["items"][0]["course_name"], "高数")
         self.assertEqual(body["items"][0]["total_score"], 15.0)
         self.assertEqual(posts, [])
-        self.assertEqual(events, [("jwxt.evaluate", "success")])
 
     def test_cli_evaluate_confirm_posts_once(self):
         posts = []

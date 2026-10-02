@@ -6,7 +6,6 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from qfnu import telemetry
 from qfnu.cli import run
 from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_message
@@ -168,10 +167,7 @@ class JWXTGradesTest(unittest.TestCase):
             grades(client, "2025-2026-3")
         self.assertEqual(caught.exception.message, "grades page requires login")
 
-    def test_cli_grades_returns_items_and_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_grades_returns_items(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -191,7 +187,6 @@ class JWXTGradesTest(unittest.TestCase):
                 code = run_jwxt(["grades", "--semester", "2025-2026-3", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
@@ -199,12 +194,8 @@ class JWXTGradesTest(unittest.TestCase):
         self.assertEqual(body["items"], body["grades"])
         self.assertEqual(body["items"][0]["course_name"], "程序设计")
         self.assertEqual(body["semester"], "2025-2026-3")
-        self.assertEqual(events, [("jwxt.grades", "success")])
 
-    def test_cli_grades_kksj_alias_and_login_failure_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_grades_kksj_alias_and_login_failure(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -221,12 +212,10 @@ class JWXTGradesTest(unittest.TestCase):
                 code = run_jwxt(["grades", "--kksj", "2025-2026-3", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "grades page requires login")
-        self.assertEqual(events, [("jwxt.grades", "failure")])
 
 
 SCHEDULE_TABLE = """
@@ -289,10 +278,7 @@ class JWXTScheduleTest(unittest.TestCase):
             schedule(client, "2025-2026-3", "1", "")
         self.assertEqual(caught.exception.message, "schedule page requires login")
 
-    def test_cli_schedule_returns_items_and_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_schedule_returns_items(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -314,7 +300,6 @@ class JWXTScheduleTest(unittest.TestCase):
                 )
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
@@ -322,7 +307,6 @@ class JWXTScheduleTest(unittest.TestCase):
         self.assertEqual(body["items"], body["schedule"])
         self.assertEqual(body["items"][0]["day"], "周一")
         self.assertEqual(body["week"], "1")
-        self.assertEqual(events, [("jwxt.schedule", "success")])
 
 
 PROGRAM_PAGE = """
@@ -410,10 +394,7 @@ class JWXTProgramTest(unittest.TestCase):
             program(client, "")
         self.assertEqual(caught.exception.message, "program page requires login")
 
-    def test_cli_program_follows_iframe_filters_and_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_program_follows_iframe_filters(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -434,7 +415,6 @@ class JWXTProgramTest(unittest.TestCase):
                 code = run_jwxt(["program", "--keyword", "高等数学", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
@@ -444,12 +424,8 @@ class JWXTProgramTest(unittest.TestCase):
         self.assertEqual(body["keyword"], "高等数学")
         self.assertEqual(body["groups"][0]["group_name"], "专业课-专业核心课程模块")
         self.assertEqual(body["objectives"], "培养德智体美劳全面发展的人才")
-        self.assertEqual(events, [("jwxt.program", "success")])
 
-    def test_cli_pyfa_alias_reports_program_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_pyfa_alias_returns_program(self):
         original_text = JWXTClient.text
         JWXTClient.text = lambda *_args, **_kwargs: (
             200,
@@ -465,12 +441,10 @@ class JWXTProgramTest(unittest.TestCase):
                 code = run_jwxt(["pyfa", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
         self.assertEqual(body["count"], 3)
-        self.assertEqual(events, [("jwxt.program", "success")])
 
 
 def cookie_values(cookies, name):
@@ -759,10 +733,7 @@ class JWXTExamsTest(unittest.TestCase):
             exams(client, "2026-2027-1", "")
         self.assertEqual(caught.exception.message, "exam list page is not recognised")
 
-    def test_cli_exams_returns_items_and_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_exams_returns_items(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -784,18 +755,13 @@ class JWXTExamsTest(unittest.TestCase):
                 )
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
         self.assertEqual(body["count"], 2)
         self.assertEqual(body["items"][1]["course_name"], "高等数学")
-        self.assertEqual(events, [("jwxt.exams", "success")])
 
-    def test_cli_exams_no_data_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_exams_no_data_returns_message(self):
         original_text = JWXTClient.text
 
         def fake_text(self, method, target, body=None, headers=None, same_origin=False):
@@ -814,18 +780,13 @@ class JWXTExamsTest(unittest.TestCase):
                 code = run_jwxt(["exams", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
         self.assertEqual(body["count"], 0)
         self.assertEqual(body["message"], "未查到数据")
-        self.assertEqual(events, [("jwxt.exams", "success")])
 
-    def test_cli_exams_login_failure_reports_usage(self):
-        events = []
-        original = telemetry.report_usage
-        telemetry.report_usage = lambda feature, status: events.append((feature, status))
+    def test_cli_exams_login_failure(self):
         original_text = JWXTClient.text
         JWXTClient.text = lambda *_args, **_kwargs: (
             200,
@@ -841,12 +802,21 @@ class JWXTExamsTest(unittest.TestCase):
                 code = run_jwxt(["exams", "--session-path", path], out)
         finally:
             JWXTClient.text = original_text
-            telemetry.report_usage = original
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "exam query page requires login")
-        self.assertEqual(events, [("jwxt.exams", "failure")])
+
+
+class JWXTRelayOfflineTest(unittest.TestCase):
+    def test_relay_points_users_to_qq_group(self):
+        out = io.StringIO()
+        code = run_jwxt(["relay", "recommendation"], out)
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "反馈与推荐提交暂时不可用")
+        self.assertIn("1087015770", body["hint"])
 
 
 if __name__ == "__main__":

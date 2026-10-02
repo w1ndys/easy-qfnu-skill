@@ -9,7 +9,6 @@ from qfnu import precourse
 from qfnu.cli import run
 
 ORIGINAL_ENDPOINT = precourse.endpoint
-ORIGINAL_REPORT = precourse.report_precourse_usage
 SERVER_STATE = {"status": 200, "body": "{}", "paths": [], "auth": ""}
 
 
@@ -40,16 +39,6 @@ def stop_server(server):
     server.server_close()
 
 
-def capture_usage():
-    events = []
-
-    def fake(operation, status):
-        events.append(operation + ":" + status)
-
-    precourse.report_precourse_usage = fake
-    return events
-
-
 class PrecourseTest(unittest.TestCase):
     def setUp(self):
         SERVER_STATE["status"] = 200
@@ -59,10 +48,8 @@ class PrecourseTest(unittest.TestCase):
 
     def tearDown(self):
         precourse.endpoint = ORIGINAL_ENDPOINT
-        precourse.report_precourse_usage = ORIGINAL_REPORT
 
     def test_search_builds_query_and_returns_courses(self):
-        events = capture_usage()
         SERVER_STATE["body"] = (
             '{"code":"OK","data":{"count":1,"courses":[{"courseCode":"590014","courseName":"音乐鉴赏"}]}}'
         )
@@ -90,10 +77,8 @@ class PrecourseTest(unittest.TestCase):
         self.assertEqual(body["source"], "precourse")
         self.assertEqual(body["count"], 1)
         self.assertEqual(len(body["courses"]), 1)
-        self.assertEqual(events, ["search:success"])
 
     def test_meta_popular_and_cli_dispatch(self):
-        events = capture_usage()
         SERVER_STATE["body"] = '{"code":0,"data":{"items":[]}}'
         server = start_server()
         try:
@@ -115,7 +100,6 @@ class PrecourseTest(unittest.TestCase):
                 "/v1/precourse/search?q=%E9%9F%B3%E4%B9%90",
             ],
         )
-        self.assertEqual(events, ["meta:success", "popular:success", "search:success"])
 
         out = io.StringIO()
         run(["precourses", "search", "音乐"], out, io.StringIO())
@@ -124,12 +108,10 @@ class PrecourseTest(unittest.TestCase):
         self.assertIn("unknown command: precourses", body["error"])
 
     def test_rejects_missing_conditions_and_remote_failure(self):
-        events = capture_usage()
         out = io.StringIO()
         code = precourse.run_precourse_search(["--campus", " "], out)
         self.assertNotEqual(code, 0)
         self.assertIn("非空", out.getvalue())
-        self.assertEqual(events, [])
 
         SERVER_STATE["status"] = 502
         SERVER_STATE["body"] = '{"code":"UPSTREAM_UNAVAILABLE","data":null}'
@@ -143,7 +125,6 @@ class PrecourseTest(unittest.TestCase):
             stop_server(server)
         self.assertNotEqual(code, 0)
         self.assertIn("HTTP 502", out.getvalue())
-        self.assertEqual(events, ["search:failure"])
 
 
 if __name__ == "__main__":

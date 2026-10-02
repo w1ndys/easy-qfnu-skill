@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.request import Request
 
-from qfnu import freshman, jwc, jwxt_auth, precourse, recommendation, telemetry, trace
+from qfnu import freshman, jwc, jwxt_auth, precourse, recommendation, trace
 from qfnu.cli import run
 from qfnu.result import failure, success, write_json
 
@@ -135,8 +135,6 @@ class TraceTest(unittest.TestCase):
 
     def test_success_command_debug_keeps_empty_payload(self):
         original = precourse.endpoint
-        original_report = precourse.report_precourse_usage
-        precourse.report_precourse_usage = lambda *_args: None
         server = start_server(EmptySuccessHandler)
         try:
             precourse.endpoint = "http://127.0.0.1:" + str(server.server_address[1]) + "/v1/precourse"
@@ -145,7 +143,6 @@ class TraceTest(unittest.TestCase):
         finally:
             stop_server(server)
             precourse.endpoint = original
-            precourse.report_precourse_usage = original_report
         self.assertEqual(code, 0)
         body = json.loads(out.getvalue())
         self.assertTrue(body["ok"])
@@ -155,13 +152,10 @@ class TraceTest(unittest.TestCase):
     @contextmanager
     def http_502(self):
         server = start_server(TraceHandler)
-        original_usage = telemetry.report_usage
-        telemetry.report_usage = lambda *_args: None
         try:
             yield "http://127.0.0.1:" + str(server.server_address[1])
         finally:
             stop_server(server)
-            telemetry.report_usage = original_usage
 
     def assert_keeps_raw_body(self, args):
         out = io.StringIO()
@@ -174,27 +168,21 @@ class TraceTest(unittest.TestCase):
 
     def test_precourse_http_keeps_raw_body(self):
         original = precourse.endpoint
-        original_report = precourse.report_precourse_usage
-        precourse.report_precourse_usage = lambda *_args: None
         try:
             with self.http_502() as origin:
                 precourse.endpoint = origin + "/v1/precourse"
                 self.assert_keeps_raw_body(["precourse", "search", "--course-name", "音乐"])
         finally:
             precourse.endpoint = original
-            precourse.report_precourse_usage = original_report
 
     def test_recommendation_http_keeps_raw_body(self):
         original = recommendation.endpoint
-        original_report = recommendation.report_recommendation_usage
-        recommendation.report_recommendation_usage = lambda *_args: None
         try:
             with self.http_502() as origin:
                 recommendation.endpoint = origin + "/v1/recommendation"
                 self.assert_keeps_raw_body(["recommendation", "search", "--course", "音乐"])
         finally:
             recommendation.endpoint = original
-            recommendation.report_recommendation_usage = original_report
 
     def test_freshman_http_keeps_raw_body(self):
         original = freshman.FRESHMAN_API

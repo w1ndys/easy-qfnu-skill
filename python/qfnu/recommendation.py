@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from . import telemetry, trace
+from . import trace
 from .result import failure, success, write_json
 from .version import VERSION
 
@@ -21,15 +21,10 @@ class RecommendationError(Exception):
 
 
 class RecommendationClientError(Exception):
-    def __init__(self, message, hint, report):
+    def __init__(self, message, hint):
         super().__init__(message)
         self.message = message
         self.hint = hint
-        self.report = report
-
-
-def report_recommendation_usage(operation, status):
-    telemetry.report_usage("recommendation." + operation, status)
 
 
 def run_recommendation(args, out):
@@ -104,8 +99,6 @@ def request_recommendation(values, out):
     try:
         response = query_recommendations(values)
     except RecommendationClientError as err:
-        if err.report:
-            report_recommendation_usage("search", "failure")
         return write_recommendation_failure(out, err.message, err.hint)
     return finish_recommendation_response(response, out)
 
@@ -113,13 +106,10 @@ def request_recommendation(values, out):
 def finish_recommendation_response(response, out):
     if response["status"] < 200 or response["status"] >= 300:
         message = response_message(response["body"], "推荐服务返回 HTTP " + str(response["status"]))
-        report_recommendation_usage("search", "failure")
         return write_recommendation_failure(out, message, "请稍后重试")
     if not is_success_code(response["body"].get("code")):
         message = response_message(response["body"], "推荐服务拒绝了查询请求")
-        report_recommendation_usage("search", "failure")
         return write_recommendation_failure(out, message, "请检查查询条件后重试")
-    report_recommendation_usage("search", "success")
     return write_json(out, success("recommendation", recommendation_result(response)))
 
 
@@ -155,7 +145,7 @@ def query_recommendations(values):
     try:
         raw, status = read_response(request)
     except OSError as exc:
-        raise RecommendationClientError("推荐查询请求失败", "请检查网络和远程服务后重试", True) from exc
+        raise RecommendationClientError("推荐查询请求失败", "请检查网络和远程服务后重试") from exc
     return decode_body(raw, status, target)
 
 
@@ -164,9 +154,9 @@ def decode_body(raw, status, target):
         body = json.loads(raw)
     except (TypeError, ValueError) as exc:
         trace.note("invalid JSON")
-        raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试", True) from exc
+        raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试") from exc
     if not isinstance(body, dict):
-        raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试", True)
+        raise RecommendationClientError("推荐服务返回了无效 JSON", "请稍后重试")
     return {"status": status, "url": target, "body": body}
 
 

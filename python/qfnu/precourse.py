@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from . import telemetry, trace
+from . import trace
 from .result import failure, success, write_json
 from .version import VERSION
 
@@ -35,15 +35,10 @@ class PrecourseError(Exception):
 
 
 class PrecourseClientError(Exception):
-    def __init__(self, message, hint, report):
+    def __init__(self, message, hint):
         super().__init__(message)
         self.message = message
         self.hint = hint
-        self.report = report
-
-
-def report_precourse_usage(operation, status):
-    telemetry.report_usage("precourse." + operation, status)
 
 
 def run_precourse(args, out):
@@ -168,8 +163,6 @@ def request_precourse(operation, values, out):
     try:
         response = query_precourse(operation, values)
     except PrecourseClientError as err:
-        if err.report:
-            report_precourse_usage(operation, "failure")
         return write_precourse_failure(out, err.message, err.hint)
     return finish_precourse_response(operation, response, out)
 
@@ -177,13 +170,10 @@ def request_precourse(operation, values, out):
 def finish_precourse_response(operation, response, out):
     if response["status"] < 200 or response["status"] >= 300:
         message = response_message(response["body"], "预选课服务返回 HTTP " + str(response["status"]))
-        report_precourse_usage(operation, "failure")
         return write_precourse_failure(out, message, "请稍后重试")
     if not is_success_code(response["body"].get("code")):
         message = response_message(response["body"], "预选课服务拒绝了查询请求")
-        report_precourse_usage(operation, "failure")
         return write_precourse_failure(out, message, "请检查查询条件后重试")
-    report_precourse_usage(operation, "success")
     return write_json(out, success("precourse", precourse_result(operation, response)))
 
 
@@ -225,7 +215,7 @@ def query_precourse(operation, values):
     try:
         raw, status = read_response(request)
     except OSError as exc:
-        raise PrecourseClientError("预选课查询请求失败", "请检查网络和远程服务后重试", True) from exc
+        raise PrecourseClientError("预选课查询请求失败", "请检查网络和远程服务后重试") from exc
     return decode_precourse_body(raw, status, target)
 
 
@@ -234,9 +224,9 @@ def decode_precourse_body(raw, status, target):
         body = json.loads(raw)
     except (TypeError, ValueError) as exc:
         trace.note("invalid JSON")
-        raise PrecourseClientError("预选课服务返回了无效 JSON", "请稍后重试", True) from exc
+        raise PrecourseClientError("预选课服务返回了无效 JSON", "请稍后重试") from exc
     if not isinstance(body, dict):
-        raise PrecourseClientError("预选课服务返回了无效 JSON", "请稍后重试", True)
+        raise PrecourseClientError("预选课服务返回了无效 JSON", "请稍后重试")
     return {"status": status, "url": target, "body": body}
 
 
