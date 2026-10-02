@@ -50,11 +50,13 @@ easy-qfnu jwxt login --username <student-id> --password <password>
 
 Cookies are written to `~/.local/state/easy-qfnu-skill/jwxt-session.json`; override the path with `QFNU_JWXT_COOKIE_PATH`. The file mode is `0600`. Never store the password there or commit the file.
 
-Credentials come from `--username`/`--password`, `QFNU_JWXT_USERNAME`/`QFNU_JWXT_PASSWORD`, or saved credentials. Never echo the password into chat logs.
+Credentials come from `--username`/`--password`, `QFNU_JWXT_USERNAME`/`QFNU_JWXT_PASSWORD`, or saved credentials. Never echo the password into chat logs. Prefer the environment variable or saved credentials over `--password`: argv stays visible in local process listings.
 
 Credentials are never saved unless explicitly enabled with `--save-credentials yes` or `QFNU_JWXT_SAVE_CREDENTIALS=yes`; `--save-credentials no` is also accepted. Saved credentials are stored at `~/.local/state/easy-qfnu-skill/jwxt-credentials.json`; override the path with `QFNU_JWXT_CREDENTIALS_PATH`. Its parent directory uses mode `0700` and the file uses `0600`.
 
 Credential precedence is command-line arguments, environment variables, then saved credentials. After an expired session, `jwxt status` makes one automatic OCR login attempt only when saved credentials exist and `QFNU_OCR_URL` is configured. Without OCR it returns a manual captcha hint. Wrong passwords and accounts logged in elsewhere stop without another automatic attempt.
+
+`jwxt status` never trusts the local session file: it loads the cookies, calls `xsMain.jsp`, and treats a non-200 response, `请输入账号` / `请输入密码` / `请输入验证码` in the body, or a missing success marker as expired. No session (`session_expired: false`), an expired session (`session_expired: true`), and a failed check (`session_expired: null`) all return `ok: false` with `logged_in: false` plus a `hint`; only a healthy session returns `ok: true` with `logged_in: true`. A caller that reads only `ok` can no longer mistake a dead session for a live one.
 
 ## CLI
 

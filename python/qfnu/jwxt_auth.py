@@ -20,7 +20,7 @@ from .jwxt_client import (
     default_credentials_path,
     write_private_file,
 )
-from .result import success
+from .result import failure, success
 
 SHOW_MSG_RE = re.compile(
     r'<([a-z][a-z0-9]*)\b[^>]*\bid\s*=\s*["\']showMsg["\'][^>]*>',
@@ -312,21 +312,16 @@ def login(client, username, password, captcha_text, save_credentials):
 
 def status(client):
     if not client.has_origin_cookies():
-        return success(
-            "jwxt",
-            {
-                "logged_in": False,
-                "session_path": client.session_path,
-                "hint": "run easy-qfnu jwxt login first",
-            },
+        return not_logged_in(
+            client,
+            "not logged in",
+            "run easy-qfnu jwxt login first",
+            False,
         )
     try:
         code, final_url, main = client.text("GET", MAIN_URL)
     except OSError as exc:
-        return success(
-            "jwxt",
-            {"logged_in": False, "session_path": client.session_path, "error": str(exc)},
-        )
+        return not_logged_in(client, str(exc), "请检查网络和本地会话后重试", None)
     if (
         code != 200
         or contains_any(main, ["请输入账号", "请输入密码", "请输入验证码"])
@@ -340,6 +335,7 @@ def status(client):
         "jwxt",
         {
             "logged_in": True,
+            "session_expired": False,
             "username": client.meta.get("username") or "",
             "profile": profile,
             "main_url": final_url,
@@ -364,7 +360,16 @@ def expired_status(client):
     hint = "run easy-qfnu jwxt login again"
     if client.ocr_url == "" and client.meta.get("username"):
         hint = "会话已过期且未配置 QFNU_OCR_URL；请运行 easy-qfnu jwxt captcha，再用 easy-qfnu jwxt login --captcha 提交识别结果"
-    return success("jwxt", {"logged_in": False, "session_path": client.session_path, "hint": hint})
+    return not_logged_in(client, "jwxt session expired", hint, True)
+
+
+def not_logged_in(client, message, hint, expired):
+    """未登录/会话过期一律 ok:false，并显式给出 logged_in 与 session_expired。"""
+    result = failure("jwxt", message, hint)
+    result["logged_in"] = False
+    result["session_expired"] = expired
+    result["session_path"] = client.session_path
+    return result
 
 
 def load_credentials_file():

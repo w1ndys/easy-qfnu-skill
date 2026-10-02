@@ -105,7 +105,7 @@ easy-qfnu recommendation search --teacher "张" --top 20
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
 easy-qfnu jwxt login --username <student-id> --password <password>  # independent OCR when QFNU_OCR_URL is set
-easy-qfnu jwxt status   # logged_in and profile
+easy-qfnu jwxt status   # logged_in + session_expired + profile
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
 easy-qfnu jwxt exams --semester 2025-2026-3

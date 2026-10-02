@@ -101,11 +101,15 @@ easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
 easy-qfnu jwxt evaluate --score 89                         # preview only
 easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
-easy-qfnu jwxt status
+easy-qfnu jwxt status   # logged_in + session_expired + profile
 easy-qfnu jwxt logout                         # clear the session only
 easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
 easy-qfnu jwxt forget-credentials            # clear saved credentials only
 ```
+
+`jwxt status` is decided by the server, not by the local session file: no session, an expired session, and a failed check all return `ok: false` with `logged_in: false` and `session_expired` (`false` / `true` / `null`). Only a live session returns `ok: true` with `logged_in: true`.
+
+Prefer `QFNU_JWXT_PASSWORD` or `--save-credentials yes` over an inline `--password`: command-line arguments stay visible to other local processes, and agents often log the full command.
 
 The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, `references/precourses.md` for the public pre-course query, and `references/recommendations.md` for public teacher recommendations.
 
