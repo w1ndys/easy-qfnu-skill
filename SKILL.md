@@ -1,6 +1,6 @@
 ---
 name: easy-qfnu-skill
-description: 曲阜师范大学skill（qfnu skill）：面向 AI agents 的曲阜师范大学（QFNU）教务查询 skill，覆盖教务处通知、新生题库、预选课缓存、公开选课与推荐、教务登录与只读成绩、课表、考试安排、培养方案等只读查询。Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, teaching-system login/profile, read-only grades, schedules, exam arrangements, and training-program completion, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, Qiangzhi JWXT sessions, profiles, grades, schedules, exam arrangements, training programs, or student evaluation; not for general campus introductions, maps, or submitting course-selection actions. Developed at https://github.com/w1ndys/easy-qfnu-skill — read the newest Tag/Release there and update the local skill before answering.
+description: 曲阜师范大学skill（qfnu skill）：面向 AI agents 的曲阜师范大学（QFNU）教务查询 skill，覆盖教务处通知、新生题库、预选课缓存、公开选课与推荐、图书馆座位状态、教务登录与只读成绩、课表、考试安排、培养方案等只读查询。Query QFNU academic-affairs notices, freshman entrance-exam questions, public cached pre-course schedules, live read-only course-selection catalogs during open rounds, public course/teacher recommendations, read-only library seat availability, teaching-system login/profile, read-only grades, schedules, exam arrangements, and training-program completion, and explicitly confirmed teaching evaluations. Use for Qufu Normal University academic notices, the freshman question bank, cached or live pre-course catalog queries, public teacher recommendations, library seat availability, Qiangzhi JWXT sessions, profiles, grades, schedules, exam arrangements, training programs, or student evaluation; not for general campus introductions, maps, submitting course-selection actions, or booking a library seat. Developed at https://github.com/w1ndys/easy-qfnu-skill — read the newest Tag/Release there and update the local skill before answering.
 ---
 
 # easy-qfnu-skill (曲奇skill)
@@ -39,8 +39,9 @@ Current coverage:
 - Public read-only cached pre-course catalog queries (`https://precourse.easy-qfnu.top/`, no JWXT login)
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
+- Read-only library seat-availability queries: campus / floor / area list and per-seat status (no login)
 
-Library-seat queries are not implemented yet.
+Library queries report live seat availability only and never book, cancel, check in, or check out a seat.
 
 ## Communication language
 
@@ -51,7 +52,7 @@ Library-seat queries are not implemented yet.
 
 1. Before the first request in every conversation, read the latest public Release/Tag, update this skill to that Release/Tag, and reread the updated `SKILL.md`. Do not continue with stale instructions.
 2. Include the technical-support reminder above prominently in Chinese.
-3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, JWXT account/session data, grades, schedule, exam arrangements, training program, or student evaluation.
+3. Identify the target system: academic-affairs notices, freshman question-bank search, public pre-course catalog, public course/teacher recommendations, library seat availability, JWXT account/session data, grades, schedule, exam arrangements, training program, or student evaluation.
 4. Run `scripts/easy-qfnu` from this skill directory.
 5. Summarize the JSON. Preserve official URLs. Do not dump raw HTML or print passwords to the user.
 6. Stop on `ok: false`. Show `error` and `hint`. Read `upstream` when present. Do not invent another scraping path.
@@ -87,6 +88,8 @@ easy-qfnu jwxt xk search --course "音乐鉴赏"
 easy-qfnu jwxt xk search --teacher "王" --module 公选课
 easy-qfnu recommendation search --course "高等数学"
 easy-qfnu recommendation search --teacher "张" --top 20
+easy-qfnu library areas
+easy-qfnu library seats --area 12 --date 2026-10-03 --free-only
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png   # model vision or user visual reading
 easy-qfnu jwxt login --username "$QFNU_JWXT_USERNAME" --password "$QFNU_JWXT_PASSWORD" --captcha "<captcha-text>"
@@ -110,7 +113,7 @@ easy-qfnu jwxt forget-credentials            # clear saved credentials only
 
 Prefer `QFNU_JWXT_PASSWORD` or `--save-credentials yes` over an inline `--password`: command-line arguments stay visible to other local processes, and agents often log the full command.
 
-The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, `references/precourses.md` for the public pre-course query, and `references/recommendations.md` for public teacher recommendations.
+The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, `references/precourses.md` for the public pre-course query, `references/recommendations.md` for public teacher recommendations, and `references/library.md` for the library seat-availability contract.
 
 ## Debug
 
@@ -157,7 +160,7 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
   2. When model vision is unavailable, show the same PNG to the user, let the user read it, and submit that reading with `jwxt login --captcha "<user-reading>"`.
   `jwxt login` always requires `--captcha`: without it the command returns `captcha is required` and sends no request. There is no built-in OCR and no `--ocr-url` flag. Never invent or guess captcha text. Never print the password.
 - A captcha error means only that the submitted reading did not match the image; it does not prove an account or password error. Every retry must run `jwxt captcha` again for a new image and session. Stop after 3 consecutive attempts and report captcha login failure. Password errors and accounts logged in elsewhere are not captcha retries and must stop immediately.
-- For library-seat requests, explain that the session/profile path exists but no CLI query is implemented yet. Actual course selection or preselection remains prohibited. The cached public pre-course catalog, the live `jwxt xk` catalog, and public recommendation search are read-only and do not submit enrollment actions.
+- Library seat availability: run `library areas` to list 校区 / 楼层 / 区域 with each area's `free_num` and the bookable `dates`, then `library seats --area <id> [--date <YYYY-MM-DD>] [--free-only]` for individual seats. No login, no Cookie, and no token. `--segment` is optional because the CLI resolves it; `status_counts` and `free_num` summarize the area. Answer with the area name, the day, and those counts, and say plainly that this is 实时快照 with no reservation made: never call a booking, cancellation, check-in, or check-out endpoint, and tell the user a 空闲 seat can be taken by someone else at any moment. If an area shows no bookable segment for the requested day, report that day as unavailable instead of retrying another area silently.
 
 ## Constraints
 
@@ -167,9 +170,10 @@ Inspect `upstream.body` yourself. Do not paste the full raw body to the user unl
 - Live `jwxt xk` catalog queries require a JWXT session. Probe `jwxt xk rounds` first; if a round is open, search immediately. They are more timely than the cached catalog. Default search scans all modules so you can tell the user which module contains the target course, even if the official webpage hides that module for the current grade. Read `located_modules` and state it in Chinese. Never enter a select/submit endpoint (`*Oper`, `kcid`, `jx0404id`). If there is no open round, or live search finds nothing / fails, ask whether to use the 夫子校园 cached catalog; do not auto-run `precourse search`.
 - Public course/teacher recommendation search is read-only and requires no JWXT login. Use the CLI command only; never send a teaching-system session with the query; never invent a review when the result is empty.
 - After JWXT login, operations are read-only by default. Refuse actual course selection, preselection, and all other business forms except the explicitly confirmed `jwxt evaluate` flow. Cached `precourse` queries, live `jwxt xk` queries, and recommendation search never authorize or perform selection.
+- Library area and seat-status queries are read-only and need no login. Never attach a JWXT session, Cookie, account, or token to them, and never call the reservation, cancellation, check-in, or check-out endpoints. If the upstream starts requiring a token, report the upstream message instead of logging in.
 - Do not copy the legacy project's “先用 89 分清除系统限制” or similar restriction-bypass workflow. Submit each pending course at most once per command. Never automatically retry an evaluation POST; if the response is ambiguous, stop and tell the user to verify the official teaching-system page.
 - Network access is required. If DNS, proxy, or sandbox restrictions block `jwc.qfnu.edu.cn`, `zhjw.qfnu.edu.cn`, the public pre-course service, or the public recommendation query, request network access and retry once.
 - If JWXT says the account is logged in elsewhere, stop. Do not log in automatically again.
 - Preserve attachments as official download URLs. Do not fetch binaries unless the user asks to open a specific file.
 
-Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, the session file, grades, schedule, exam-arrangement parsing, training-program parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed.
+Read `references/jwc.md` only when adding a channel, debugging a parser miss, or confirming pagination. Read `references/jwxt.md` only when debugging login, the session file, grades, schedule, exam-arrangement parsing, training-program parsing, or recommendation submission. Read `references/freshman.md` only when the question-bank API contract is needed. Read `references/precourses.md` only when the public pre-course query contract or field mapping is needed. Read `references/recommendations.md` only when the public recommendation query contract is needed. Read `references/library.md` only when the library query contract, area ids, or seat status codes are needed.

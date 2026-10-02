@@ -22,8 +22,9 @@ Current coverage:
 - Public read-only pre-course catalog and schedule queries via [precourse.easy-qfnu.top](https://precourse.easy-qfnu.top/) (no JWXT login)
 - Live read-only course-selection catalog queries during an open round (requires JWXT login; never submits selection)
 - Public read-only course and teacher recommendations (no JWXT login)
+- Live read-only library seat-availability queries: campus/floor/area list and per-seat status (no login)
 
-Library-seat queries are planned. The CLI is query-only except for explicitly confirmed student-evaluation submissions; feedback and recommendation submission are offline, and it never performs course selection or preselection (`选课`/`预选课`).
+Library queries report live seat availability only and never book, cancel, check in, or check out a seat. The CLI is query-only except for explicitly confirmed student-evaluation submissions; feedback and recommendation submission are offline, and it never performs course selection or preselection (`选课`/`预选课`).
 
 ## Skill layout
 
@@ -39,6 +40,7 @@ easy-qfnu-skill/
   references/freshman.md
   references/precourses.md
   references/recommendations.md
+  references/library.md
 ```
 
 ## Setup
@@ -98,6 +100,8 @@ easy-qfnu jwxt xk rounds
 easy-qfnu jwxt xk search --course "音乐鉴赏"
 easy-qfnu recommendation search --course "高等数学"
 easy-qfnu recommendation search --teacher "张" --top 20
+easy-qfnu library areas
+easy-qfnu library seats --area 12 --date 2026-10-03 --free-only
 
 easy-qfnu jwxt captcha --out /tmp/jwxt-captcha.png  # model vision or user visual reading
 easy-qfnu jwxt login --username <student-id> --password <password> --captcha <captcha-text>
@@ -125,4 +129,4 @@ A captcha error means only that the current reading does not match. Run `jwxt ca
 
 `jwxt schedule` returns `items` and `schedule` arrays with weekday, period, course name, and cell details. Empty cells are omitted. Pass `--week` for one week or omit it for all weeks.
 
-Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search, public pre-course queries, and public recommendation queries require their respective read-only services. Cached pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result. While a selection round is open, `jwxt xk search` is the live catalog: it is more timely, requires login, and `located_modules` tells which selection module actually contains the course (the official webpage may hide modules by grade). Neither command submits enrollment. Recommendation search never sends a teaching-system session.
+Output is JSON. JWC requires network access to `jwc.qfnu.edu.cn`; JWXT requires `zhjw.qfnu.edu.cn`; freshman search, public pre-course queries, and public recommendation queries require their respective read-only services; library seat queries require `libyy.qfnu.edu.cn` and need no login. Cached pre-course data is a scheduled snapshot and may lag the teaching system; it is not a course-selection result. While a selection round is open, `jwxt xk search` is the live catalog: it is more timely, requires login, and `located_modules` tells which selection module actually contains the course (the official webpage may hide modules by grade). Neither command submits enrollment. Recommendation search never sends a teaching-system session. Library seat queries never reserve anything: a seat shown as 空闲 can be taken at any moment.

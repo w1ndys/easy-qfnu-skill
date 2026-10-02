@@ -4,7 +4,7 @@ import json
 import re
 import unittest
 
-from qfnu import cli, freshman, jwc, jwxt, jwxt_xk, precourse, recommendation
+from qfnu import cli, freshman, jwc, jwxt, jwxt_xk, library, precourse, recommendation
 from qfnu.cli import run
 from qfnu.version import VERSION
 
@@ -49,6 +49,8 @@ class CliTest(unittest.TestCase):
             (["precourse", "meta", "--help"], "easy-qfnu precourse"),
             (["precourse", "popular", "-h"], "easy-qfnu precourse"),
             (["recommendation", "search", "--help"], "easy-qfnu recommendation"),
+            (["library", "areas", "--help"], "easy-qfnu library"),
+            (["library", "seats", "-h"], "easy-qfnu library"),
         )
         for args, expected in cases:
             out = io.StringIO()
@@ -88,6 +90,12 @@ class UsageDriftTest(unittest.TestCase):
                 recommendation.usage_recommendation,
                 recommendation.RECOMMENDATION_COMMANDS,
                 recommendation.recommendation_command,
+            ),
+            (
+                library,
+                library.usage_library,
+                library.LIBRARY_COMMANDS,
+                library.library_command,
             ),
         )
         for module, usage, table, lookup in families:

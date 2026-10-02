@@ -191,4 +191,4 @@ Querying public recommendations does not use JWXT; run `recommendation search` a
 
 ## Out of scope
 
-Course selection, preselection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. The public `precourse` catalog and `recommendation search` are separate read-only queries. Grade and schedule queries remain read-only CLI operations. Library-seat queries are not implemented yet.
+Course selection, preselection, personal-information saves, and every business-form submission other than the explicitly confirmed `jwxt evaluate` command are prohibited. The public `precourse` catalog, `recommendation search`, and `library` queries are separate read-only commands that need no JWXT session. Grade and schedule queries remain read-only CLI operations.

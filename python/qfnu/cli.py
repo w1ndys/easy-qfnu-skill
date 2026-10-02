@@ -6,6 +6,7 @@ from . import trace
 from .freshman import run_freshman
 from .jwc import run_jwc
 from .jwxt import run_jwxt
+from .library import run_library
 from .precourse import run_precourse
 from .recommendation import run_recommendation
 from .result import HELP_FLAGS, failure, success, write_json
@@ -17,6 +18,7 @@ FAMILIES = (
     ("freshman", run_freshman),
     ("precourse", run_precourse),
     ("recommendation", run_recommendation),
+    ("library", run_library),
     ("jwxt", run_jwxt),
 )
 FAMILY_RUNNERS = dict(FAMILIES)
