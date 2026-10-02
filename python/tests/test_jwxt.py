@@ -901,5 +901,134 @@ class LoginRedactionTest(unittest.TestCase):
         self.assertIn("验证码错误!!", payload)
         self.assertIn("logonLdap", payload)
 
+
+class JWXTStatusTest(unittest.TestCase):
+    """未登录/会话过期必须是 ok:false，并给出 logged_in 与 session_expired。"""
+
+    LOGIN_PAGE = (
+        '<li class="input_li" id="showMsg" style="color: red;">&nbsp;请先登录系统</li>'
+        '<input type="text" class="form-control" id="userAccount" name="userAccount" '
+        'placeholder="请输入账号">'
+        '<input type="password" class="form-control" id="userPassword" name="userPassword" '
+        'placeholder="请输入密码">'
+        '<input type="text" class="form-control" id="RANDOMCODE" name="RANDOMCODE" '
+        'placeholder="请输入验证码">'
+    )
+
+    def test_status_without_session_is_not_logged_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "session.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"cookies": []}\n')
+            out = io.StringIO()
+            code = run_jwxt(["status", "--session-path", path], out)
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertFalse(body["logged_in"])
+        self.assertFalse(body["session_expired"])
+        self.assertIn("jwxt login", body["hint"])
+        self.assertEqual(body["session_path"], path)
+
+    def test_status_expired_session_reports_expired(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = JWXTStatusTest.LOGIN_PAGE.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = "http://127.0.0.1:" + str(server.server_address[1])
+        original = (jwxt_auth.MAIN_URL, jwxt_client.JWXT_BASE)
+        try:
+            jwxt_auth.MAIN_URL = base + "/jsxsd/framework/xsMain.jsp"
+            jwxt_client.JWXT_BASE = base
+            trace.reset(False)
+            with tempfile.TemporaryDirectory() as temp:
+                path = os.path.join(temp, "session.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "username": "2023413695",
+                            "cookies": [
+                                {
+                                    "Name": "JSESSIONID",
+                                    "Value": "stale",
+                                    "Path": "/",
+                                    "Domain": "127.0.0.1",
+                                    "Expires": "0001-01-01T00:00:00Z",
+                                    "Secure": False,
+                                }
+                            ],
+                        },
+                        handle,
+                    )
+                out = io.StringIO()
+                code = run_jwxt(["status", "--session-path", path], out)
+            body = json.loads(out.getvalue())
+        finally:
+            server.shutdown()
+            server.server_close()
+            trace.reset(False)
+            jwxt_auth.MAIN_URL, jwxt_client.JWXT_BASE = original
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertFalse(body["logged_in"])
+        self.assertTrue(body["session_expired"])
+        self.assertEqual(body["error"], "jwxt session expired")
+        self.assertEqual(body["upstream"]["status"], 200)
+
+
+class JWXTDispatchTest(unittest.TestCase):
+    """命令表化以后：未知动作给提示，别名走同一张表。"""
+
+    def test_unknown_action_hints_help(self):
+        out = io.StringIO()
+        code = run_jwxt(["not-an-action"], out)
+        self.assertEqual(code, 0)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "unknown action: not-an-action")
+        self.assertIn("jwxt --help", body["hint"])
+
+    def test_alias_action_uses_same_table_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "session.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"cookies": []}\n')
+            out = io.StringIO()
+            run_jwxt(["whoami", "--session-path", path], out)
+        body = json.loads(out.getvalue())
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "not logged in")
+
+    def test_forget_credentials_removes_saved_file(self):
+        original = os.environ.get("QFNU_JWXT_CREDENTIALS_PATH")
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "credentials.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"username": "2023413695", "password": "placeholder"}\n')
+            os.environ["QFNU_JWXT_CREDENTIALS_PATH"] = path
+            try:
+                out = io.StringIO()
+                code = run_jwxt(["forget-credentials"], out)
+            finally:
+                if original is None:
+                    os.environ.pop("QFNU_JWXT_CREDENTIALS_PATH", None)
+                else:
+                    os.environ["QFNU_JWXT_CREDENTIALS_PATH"] = original
+            body = json.loads(out.getvalue())
+            self.assertEqual(code, 0)
+            self.assertTrue(body["credentials_removed"])
+            self.assertFalse(os.path.exists(path))
+
+
 if __name__ == "__main__":
     unittest.main()

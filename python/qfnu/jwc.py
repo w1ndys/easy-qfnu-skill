@@ -7,7 +7,7 @@ from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, write_json
+from .result import failure, success, wants_help, write_json
 
 JWC_BASE = "https://jwc.qfnu.edu.cn"
 USER_AGENT = "easy-qfnu-skill/easy-qfnu"
@@ -401,7 +401,7 @@ def request_jwc(method, target, body, headers):
 
 
 def run_jwc(args, out):
-    if len(args) == 0 or args[0] == "--help":
+    if len(args) == 0 or wants_help(args):
         return usage_jwc(out)
     result = None
     err = None

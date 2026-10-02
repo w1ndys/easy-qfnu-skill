@@ -18,27 +18,94 @@ from .jwxt_grades import grades
 from .jwxt_program import program
 from .jwxt_schedule import schedule
 from .jwxt_xk import run_jwxt_xk
-from .result import failure, success, write_json
+from .result import failure, success, wants_help, write_json
+
+
+def _action_captcha(client, command):
+    return captcha(client, command["output"] or default_captcha_output())
+
+
+def _action_login(client, command):
+    return login_jwxt(client, command)
+
+
+def _action_status(client, command):
+    del command
+    return status(client)
+
+
+def _action_grades(client, command):
+    return grades(client, command["semester"])
+
+
+def _action_schedule(client, command):
+    return schedule(client, command["semester"], command["week"], command["mode"])
+
+
+def _action_exams(client, command):
+    return exams(client, command["semester"], command["xqlb"])
+
+
+def _action_program(client, command):
+    return program(client, command["keyword"])
+
+
+def _action_evaluations(client, command):
+    del command
+    return evaluations(client)
+
+
+def _action_evaluate(client, command):
+    return evaluate(client, command["score"], command["courses"], command["confirm"])
+
+
+# 单一来源：用法文本和分发都读这张表。加动作 = 加一行。
+# kind: action=需要会话的查询动作，session=清会话，credentials=删凭据，delegated=交给子模块。
+JWXT_COMMANDS = (
+    {"name": "captcha", "summary": "下载验证码图片", "kind": "action", "run": _action_captcha},
+    {"name": "login", "summary": "用学号/密码/验证码登录", "kind": "action", "run": _action_login},
+    {"name": "status", "summary": "登录状态与个人资料", "kind": "action", "run": _action_status},
+    {"name": "grades", "summary": "查询成绩", "kind": "action", "run": _action_grades},
+    {"name": "schedule", "summary": "查询课表", "kind": "action", "run": _action_schedule},
+    {"name": "exams", "summary": "查询考试安排", "kind": "action", "run": _action_exams},
+    {"name": "program", "summary": "查询培养方案与完成情况", "kind": "action", "run": _action_program},
+    {"name": "evaluations", "summary": "查看待提交的教学评价", "kind": "action", "run": _action_evaluations},
+    {"name": "evaluate", "summary": "提交教学评价（需 --confirm）", "kind": "action", "run": _action_evaluate},
+    {"name": "logout", "summary": "清理本地会话（--forget-credentials 一并删凭据）", "kind": "session", "run": None},
+    {"name": "forget-credentials", "summary": "只删除已保存凭据", "kind": "credentials", "run": None},
+    {"name": "xk", "summary": "选课轮次即时查询（用法见 jwxt xk --help）", "kind": "delegated", "run": None},
+)
+JWXT_INDEX = {item["name"]: item for item in JWXT_COMMANDS}
+JWXT_ALIASES = {"whoami": "status", "pyfa": "program"}
+
+
+def jwxt_command(action):
+    """按名字取命令表条目，先做别名归一。未知动作返回 None。"""
+    return JWXT_INDEX.get(JWXT_ALIASES.get(action, action))
 
 
 def run_jwxt(args, out, inp=None):
     if inp is None:
         inp = sys.stdin
-    if len(args) == 0 or args[0] == "--help":
-        return usage_jwxt(out)
-    if args[0] == "relay":
-        return write_json(out, relay_offline())
-    if args[0] == "xk":
+    action = args[0] if len(args) > 0 else ""
+    entry = jwxt_command(action)
+    if entry is not None and entry["kind"] == "delegated":
+        # xk 自带更细的用法，先交给它，别被 jwxt 这一层截胡。
         return run_jwxt_xk(args[1:], out)
-    if args[0] == "forget-credentials":
-        command, err = parse_jwxt_command(args[0], args[1:])
-        if err is not None:
-            return write_json(out, failure("jwxt", str(err), ""))
-        del command
-        return run_forget_credentials(out)
-    command, err = parse_jwxt_command(args[0], args[1:])
+    if len(args) == 0 or wants_help(args):
+        return usage_jwxt(out)
+    if action == "relay":
+        return write_json(out, relay_offline())
+    if entry is None:
+        return write_json(
+            out,
+            failure("jwxt", "unknown action: " + action, "运行 easy-qfnu jwxt --help 查看支持的动作"),
+        )
+    command, err = parse_jwxt_command(action, args[1:])
     if err is not None:
         return write_json(out, failure("jwxt", str(err), ""))
+    if entry["kind"] == "credentials":
+        return run_forget_credentials(out)
     try:
         client = prepare_client(command)
     except OSError as exc:
@@ -46,7 +113,7 @@ def run_jwxt(args, out, inp=None):
             out,
             failure("jwxt", str(exc), "请检查本地会话文件；可运行 logout 清理损坏会话"),
         )
-    if command["action"] == "logout":
+    if entry["kind"] == "session":
         return run_logout(client, command["forget"], out)
     try:
         result = execute_jwxt(client, command)
@@ -58,10 +125,12 @@ def run_jwxt(args, out, inp=None):
 
 
 def usage_jwxt(out):
+    names = "|".join(item["name"] for item in JWXT_COMMANDS)
+    lines = ["Usage: easy-qfnu jwxt <" + names + ">"]
+    lines += ["  " + item["name"].ljust(20) + item["summary"] for item in JWXT_COMMANDS]
+    lines.append("  别名：status=whoami，program=pyfa")
     try:
-        out.write(
-            "Usage: easy-qfnu jwxt <captcha|login|grades|schedule|exams|program|evaluations|evaluate|status|logout|forget-credentials|xk>\n"
-        )
+        out.write("\n".join(lines) + "\n")
     except OSError:
         return 1
     return 2
@@ -200,27 +269,11 @@ def run_logout(client, forget, out):
 
 
 def execute_jwxt(client, command):
-    action = command["action"]
-    if action == "captcha":
-        output = command["output"] or default_captcha_output()
-        return captcha(client, output)
-    if action == "login":
-        return login_jwxt(client, command)
-    if action == "status" or action == "whoami":
-        return status(client)
-    if action == "grades":
-        return grades(client, command["semester"])
-    if action == "schedule":
-        return schedule(client, command["semester"], command["week"], command["mode"])
-    if action == "exams":
-        return exams(client, command["semester"], command["xqlb"])
-    if action == "program" or action == "pyfa":
-        return program(client, command["keyword"])
-    if action == "evaluations":
-        return evaluations(client)
-    if action == "evaluate":
-        return evaluate(client, command["score"], command["courses"], command["confirm"])
-    raise JWXTError("unknown action: " + action)
+    entry = jwxt_command(command["action"])
+    handler = None if entry is None else entry["run"]
+    if handler is None:
+        raise JWXTError("unknown action: " + command["action"])
+    return handler(client, command)
 
 
 def login_jwxt(client, command):

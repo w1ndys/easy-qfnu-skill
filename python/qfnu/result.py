@@ -4,6 +4,13 @@ import json
 
 from . import trace
 
+HELP_FLAGS = ("--help", "-h")
+
+
+def wants_help(args):
+    """任意位置的 --help/-h 都算请求用法：先出用法，不发网络请求。"""
+    return any(arg in HELP_FLAGS for arg in args)
+
 
 def write_json(out, value):
     """把对象写成缩进 JSON 并换行。写出失败返回 1，成功返回 0。"""

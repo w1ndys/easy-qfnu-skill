@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, write_json
+from .result import failure, success, wants_help, write_json
 from .version import VERSION
 
 DEFAULT_ENDPOINT = "https://precourse.easy-qfnu.top/v1/precourse"
@@ -42,7 +42,7 @@ class PrecourseClientError(Exception):
 
 
 def run_precourse(args, out):
-    if len(args) == 0 or args[0] == "--help":
+    if len(args) == 0 or wants_help(args):
         return usage_precourse(out)
     action = args[0]
     if action == "search":
@@ -76,8 +76,6 @@ def run_precourse_search(args, out):
     try:
         values = parse_search_args(args)
     except PrecourseError as err:
-        if err.message == "help":
-            return usage_precourse(out)
         return write_precourse_failure(out, err.message, err.hint)
     return request_precourse("search", values, out)
 
@@ -88,8 +86,6 @@ def parse_search_args(args):
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == "--help":
-            raise PrecourseError("help")
         field = SEARCH_OPTIONS.get(arg)
         if field is not None:
             values, keyword, index = take_search_option(args, index, field, values, keyword)
@@ -133,8 +129,6 @@ def run_precourse_popular(args, out):
     try:
         field = parse_popular_field(args)
     except PrecourseError as err:
-        if err.message == "help":
-            return usage_precourse(out)
         return write_precourse_failure(out, err.message, err.hint)
     return request_precourse("popular", {"field": field}, out)
 
@@ -144,8 +138,6 @@ def parse_popular_field(args):
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == "--help":
-            raise PrecourseError("help")
         if arg != "--field":
             raise PrecourseError("unknown option: " + arg, "使用 --field 指定统计字段")
         if field != "":

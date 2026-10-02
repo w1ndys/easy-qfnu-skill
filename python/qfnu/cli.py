@@ -8,14 +8,25 @@ from .jwc import run_jwc
 from .jwxt import run_jwxt
 from .precourse import run_precourse
 from .recommendation import run_recommendation
-from .result import failure, success, write_json
+from .result import HELP_FLAGS, failure, success, write_json
 from .version import VERSION
+
+# 单一来源：顶层用法和分发都读这张表。加命令族 = 加一行。
+FAMILIES = (
+    ("jwc", run_jwc),
+    ("freshman", run_freshman),
+    ("precourse", run_precourse),
+    ("recommendation", run_recommendation),
+    ("jwxt", run_jwxt),
+)
+FAMILY_RUNNERS = dict(FAMILIES)
 
 
 def usage(out):
     """打印用法。写出失败返回 1，成功返回 2（与原 CLI 一致）。"""
+    names = "|".join([name for name, _ in FAMILIES] + ["version"])
     try:
-        out.write("Usage: easy-qfnu [--debug] <jwc|freshman|precourse|recommendation|jwxt|version>\n")
+        out.write("Usage: easy-qfnu [--debug] <" + names + ">\n")
     except OSError:
         return 1
     return 2
@@ -26,20 +37,13 @@ def run(args, stdout, stderr):
     del stderr
     debug, args = trace.take_debug_flag(args)
     trace.reset(debug)
-    if len(args) == 0 or args[0] == "--help" or args[0] == "help":
+    if len(args) == 0 or args[0] in HELP_FLAGS or args[0] == "help":
         return usage(stdout)
     if args[0] == "version" or args[0] == "--version":
         return write_json(stdout, success("easy-qfnu", {"version": VERSION}))
-    if args[0] == "jwc":
-        return run_jwc(args[1:], stdout)
-    if args[0] == "freshman":
-        return run_freshman(args[1:], stdout)
-    if args[0] == "precourse":
-        return run_precourse(args[1:], stdout)
-    if args[0] == "recommendation":
-        return run_recommendation(args[1:], stdout)
-    if args[0] == "jwxt":
-        return run_jwxt(args[1:], stdout)
+    runner = FAMILY_RUNNERS.get(args[0])
+    if runner is not None:
+        return runner(args[1:], stdout)
     return write_json(
         stdout,
         failure("easy-qfnu", "unknown command: " + args[0], "run easy-qfnu --help"),

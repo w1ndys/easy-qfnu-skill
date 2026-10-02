@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, write_json
+from .result import failure, wants_help, write_json
 
 FRESHMAN_API = "https://freshman-exam.easy-qfnu.top/api/questions"
 REQUEST_TIMEOUT = 30
@@ -115,7 +115,7 @@ def get_json_body(target):
 
 
 def run_freshman(args, out):
-    if len(args) == 0 or args[0] == "--help":
+    if len(args) == 0 or wants_help(args):
         return usage_freshman(out)
     if args[0] != "search":
         return write_json(out, failure("freshman", "unknown action: " + args[0], ""))

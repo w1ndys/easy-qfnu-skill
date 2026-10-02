@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from . import trace
-from .result import failure, success, write_json
+from .result import failure, success, wants_help, write_json
 from .version import VERSION
 
 DEFAULT_ENDPOINT = "https://recommend.easy-qfnu.top/v1/recommendation"
@@ -28,7 +28,7 @@ class RecommendationClientError(Exception):
 
 
 def run_recommendation(args, out):
-    if len(args) == 0 or args[0] == "--help":
+    if len(args) == 0 or wants_help(args):
         return usage_recommendation(out)
     if args[0] == "search":
         return run_recommendation_search(args[1:], out)
@@ -47,8 +47,6 @@ def run_recommendation_search(args, out):
     try:
         values = parse_search_args(args)
     except RecommendationError as err:
-        if err.message == "help":
-            return usage_recommendation(out)
         return write_recommendation_failure(out, err.message, err.hint)
     return request_recommendation(values, out)
 
@@ -60,8 +58,6 @@ def parse_search_args(args):
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == "--help":
-            raise RecommendationError("help")
         if arg != "--course" and arg != "--teacher" and arg != "--top":
             if arg.startswith("-"):
                 raise RecommendationError("unknown option: " + arg)

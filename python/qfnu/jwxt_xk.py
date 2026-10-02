@@ -13,7 +13,7 @@ from .jwxt_client import (
     JWXTError,
 )
 from .jwxt_html import CELL_RE, LOGIN_MARKERS, ROW_RE
-from .result import failure, success, write_json
+from .result import failure, success, wants_help, write_json
 
 XK_LIVE_NOTICE = (
     "这是选课轮次即时查询：数据来自当前开放轮次的教务库，比公开预选课缓存更准确及时。"
@@ -58,10 +58,7 @@ MODULE_ALIASES = {
 
 
 def run_jwxt_xk(args, out):
-    for arg in args:
-        if arg == "--help" or arg == "-h":
-            return usage_xk(out)
-    if len(args) == 0:
+    if len(args) == 0 or wants_help(args):
         return usage_xk(out)
     action = args[0]
     try:
@@ -107,8 +104,6 @@ def parse_xk_command(action, args):
     module_keys = []
     index = 0
     while index < len(args):
-        if args[index] == "--help":
-            raise ValueError("search 用法见 easy-qfnu jwxt xk --help")
         if index + 1 >= len(args):
             raise ValueError(args[index] + " requires a value")
         set_xk_option(query, module_keys, args[index], args[index + 1].strip())
