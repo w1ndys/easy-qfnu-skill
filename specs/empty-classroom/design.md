@@ -288,7 +288,6 @@ xnxqh=<学期>&kbjcmsid=<父页当前值>&skyx=&xqid=&jzwid=&skjsid=
       "free_blocks": ["0607", "0809", "101112"],
       "occupied_blocks": ["0102", "030405"],
       "last_free_period": 12,
-      "evidence_semesters": ["2026-2027-1"],
       "source_names": ["数学楼405"]
     }
   ],
