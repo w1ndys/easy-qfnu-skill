@@ -1,4 +1,4 @@
-"""查无上课教室的纯规则：参数校验、学期遍历窗口、节次块与名称规范化。
+"""查无上课教室的纯规则：参数校验、本学年学期列表、节次块与名称规范化。
 
 本模块只放不联网的规则，请求与编排在后续任务里接上。
 """
@@ -9,9 +9,6 @@ from .result import failure
 
 # 学期格式：YYYY-YYYY-N，末位 1 秋、2 春、3 夏。
 SEMESTER_RE = re.compile(r"^(\d{4})-(\d{4})-([123])$")
-
-# 遍历窗口最多取多少个学期。
-SEMESTER_WINDOW_SIZE = 13
 
 # 周次的合法闭区间，页面只提供 1 到 30 周。
 WEEK_RANGE = (1, 30)
@@ -31,11 +28,20 @@ PERIOD_BLOCKS = (
     ("101112", (10, 11, 12)),
 )
 
+# 大节范围的允许起点：各块的第一小节，起点只能取这些值。
+BLOCK_START_BOUNDS = tuple(periods[0] for _name, periods in PERIOD_BLOCKS)
+# 大节取值不对时的提示：起点必须落在某块开头，终点写 1 到 12 里的哪一小节都按整块纳入。
+BLOCK_BOUNDS_TEXT = (
+    "大节范围取不出整块，起始取 "
+    + "/".join(str(value) for value in BLOCK_START_BOUNDS)
+    + "，结束取 1 到 12 的任意小节（其所在大节整块纳入）"
+)
+
 # 一周 7 天，每天 5 个节次块，课表网格因此固定 35 格。
 WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)
 
-# 参数出错时的统一提示，指出这几个参数怎么传。
-PARAM_HINT = "使用 --semester、--week、--weekday、--period-start、--period-end 传参数"
+# 参数出错时的统一提示，指出这几个参数怎么传；周次是起止两值，省略 --week-end 时等于 --week。
+PARAM_HINT = "使用 --semester、--week、--week-end、--weekday、--period-start、--period-end 传参数"
 
 # 全角数字与半角数字的对应表，只用于名称规范化。
 DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
@@ -47,12 +53,6 @@ ROOM_HEAD_RE = re.compile(r"[A-Za-z]*")
 
 # 合称分隔符：顿号、半角句点和空白。
 ROOM_SEPARATOR_RE = re.compile(r"[、.\s]+")
-
-# 一个周次表达式：A-B周 是闭区间，A周 是单周；越界或倒置的表达式丢弃。
-WEEK_EXPRESSION_RE = re.compile(r"(\d+)(?:\s*-\s*(\d+))?\s*周")
-
-# 一个周次都解析不出时按整学期处理，周次全集的上下界取 WEEK_RANGE。
-WEEK_FULL_RANGE = range(WEEK_RANGE[0], WEEK_RANGE[1] + 1)
 
 
 def parse_semester(value):
@@ -67,33 +67,50 @@ def parse_semester(value):
     return int(match.group(1)), int(match.group(3))
 
 
-def semester_window(options, selected, limit=SEMESTER_WINDOW_SIZE):
-    """按父页选中学期取遍历窗口，返回 (窗口, 警告)。
+def parse_academic_year(value):
+    """取学期所属的学年串，形如 `2026-2027`；格式不符时返回 None。
 
-    窗口只含不晚于选中学期的最近 limit 项，按新到旧排列；不足 limit 项时全用。
-    选中学期缺失或格式不符时窗口为 None，调用方必须拒绝查询。
+    学年由前两段判定，季节只看末位；两者分开取，避免把跨年或残缺的值当成同一学年。
+    """
+    match = SEMESTER_RE.match(str(value if value is not None else "").strip())
+    # 下拉里可能有「全部」这类非学期项，格式不符时取不出学年。
+    if match is None:
+        return None
+    return match.group(1) + "-" + match.group(2)
+
+
+def year_semester_list(options, target):
+    """取目标学年（本学年）的学期列表，返回 (列表, 警告)。
+
+    列表含下拉里目标学年的秋季、春季与夏季，按学期末位从秋到夏排列：秋季和春季用于全年排课
+    判断，夏季是否完整由反推阶段的完整阈值判定，这里只决定要拉取哪几个学期。
+    格式不符的下拉项跳过并记警告；目标学年一项都没有时返回 None，调用方必须拒绝查询。
     """
     warnings = []
-    selected_rank = parse_semester(selected)
-    # 没有可比对的选中学期，窗口上界无法确定，只能拒绝。
-    if selected_rank is None:
+    target_year = parse_academic_year(target)
+    # 取不出目标学年就没有可比对的学年，只能拒绝。
+    if target_year is None:
         return None, warnings
     ranked = []
     for option in options or ():
-        rank = parse_semester(option)
-        # 格式不符的下拉项跳过并记警告，不参与窗口比较。
+        text = str(option if option is not None else "").strip()
+        rank = parse_semester(text)
+        # 格式不符的下拉项跳过并记警告，不参与学年比较。
         if rank is None:
-            text = str(option if option is not None else "").strip()
             if text:
                 warnings.append("学期下拉项格式不符，已跳过: " + text)
             continue
-        # 晚于选中学期的项（未来学期或空学期）不进窗口。
-        if rank > selected_rank:
+        # 只取目标学年的学期；其他学年（含未来学年）的项不进本学年列表。
+        if parse_academic_year(text) != target_year:
             continue
-        ranked.append((rank, str(option).strip()))
-    ranked.sort(reverse=True)
-    window = [value for _rank, value in ranked[:limit]]
-    return window, warnings
+        # 同一学年内按季节排：秋（1）、春（2）、夏（3）就是时间先后。
+        ranked.append((rank[1], text))
+    ranked.sort()
+    semesters = [value for _season, value in ranked]
+    # 本学年一个学期都没有时不发上游请求，直接拒绝查询。
+    if not semesters:
+        return None, warnings
+    return semesters, warnings
 
 
 def parse_bound(value, low, high):
@@ -192,41 +209,55 @@ def expand_record(jsid, jsmc):
     }
 
 
-def validate_query(semester, week, weekday, period_start, period_end, keyword=""):
+def validate_query(semester, week_start, week_end, weekday, period_start, period_end, keyword=""):
     """校验查询参数，返回 (参数, 失败结果)。
 
-    任一参数无效时返回失败结果并指出参数名，调用方不得再发上游请求。
+    任一参数无效时返回失败结果并指出参数名，调用方不得再发上游请求。结束周次或结束大节
+    省略（None 或空串）时等于对应的起始值：周次只查一周，大节只查起始大节所在的那一块。
     """
     semester_text = str(semester if semester is not None else "").strip()
     # 学期格式不对就构造不出课表 POST 的 xnxqh。
     if parse_semester(semester_text) is None:
         return None, failure("jwxt", "学期格式必须是 YYYY-YYYY-N: semester=" + semester_text, PARAM_HINT)
-    week_value = parse_bound(week, *WEEK_RANGE)
-    # 周次越界就不能交给服务端过滤，直接拒绝。
-    if week_value is None:
-        return None, failure("jwxt", "周次必须在 1 到 30 之间: week=" + str(week), PARAM_HINT)
+    # 起始周次越界就不能交给服务端过滤，直接拒绝。
+    start_week = parse_bound(week_start, *WEEK_RANGE)
+    if start_week is None:
+        return None, failure("jwxt", "起始周次必须在 1 到 30 之间: week_start=" + str(week_start), PARAM_HINT)
+    # 省略结束周次时与起始周次相同，相当于只查这一周。
+    if week_end is None or str(week_end).strip() == "":
+        end_week = start_week
+    else:
+        end_week = parse_bound(week_end, *WEEK_RANGE)
+        # 结束周次越界时同样拼不出可交给服务端过滤的闭区间。
+        if end_week is None:
+            return None, failure("jwxt", "结束周次必须在 1 到 30 之间: week_end=" + str(week_end), PARAM_HINT)
+    # 起始周次大于结束周次时闭区间为空，一周都查不出来，直接拒绝。
+    if start_week > end_week:
+        message = "起始周次不能大于结束周次: week_start=" + str(start_week) + ", week_end=" + str(end_week)
+        return None, failure("jwxt", message, PARAM_HINT)
+    # 星期只查一天：多天写法会把不同天的格混在一次响应里，越界值也定位不到列。
     weekday_value = parse_bound(weekday, *WEEKDAY_RANGE)
-    # 星期越界同样无法确定要读哪一天的数据。
     if weekday_value is None:
-        return None, failure("jwxt", "星期必须在 1 到 7 之间: weekday=" + str(weekday), PARAM_HINT)
-    start = parse_bound(period_start, *PERIOD_RANGE)
-    # 起始节次越界，查询范围没有意义。
-    if start is None:
-        return None, failure("jwxt", "起始节次必须在 1 到 12 之间: period_start=" + str(period_start), PARAM_HINT)
-    end = parse_bound(period_end, *PERIOD_RANGE)
-    # 结束节次越界，查询范围没有意义。
-    if end is None:
-        return None, failure("jwxt", "结束节次必须在 1 到 12 之间: period_end=" + str(period_end), PARAM_HINT)
-    # 起始大于结束时闭区间为空，判不出占用，直接拒绝。
-    if start > end:
-        message = "起始节次不能大于结束节次: period_start=" + str(start) + ", period_end=" + str(end)
+        message = "星期只接受 1 到 7 的单个值，本功能只查单天: weekday=" + str(weekday)
+        return None, failure("jwxt", message, PARAM_HINT)
+    start_period = parse_bound(period_start, *PERIOD_RANGE)
+    # 省略结束大节时与起始大节相同，表示只查起始大节所在的那一块。
+    if period_end is None or str(period_end).strip() == "":
+        end_period = start_period
+    else:
+        end_period = parse_bound(period_end, *PERIOD_RANGE)
+    bound_error = block_bounds_error(start_period, end_period)
+    # 大节范围取不出整块时读不出用户想要的区间，拒绝且不发上游请求。
+    if bound_error is not None:
+        message = bound_error + ": period_start=" + str(period_start) + ", period_end=" + str(period_end)
         return None, failure("jwxt", message, PARAM_HINT)
     params = {
         "semester": semester_text,
-        "week": week_value,
+        "week_start": start_week,
+        "week_end": end_week,
         "weekday": weekday_value,
-        "period_start": start,
-        "period_end": end,
+        "period_start": start_period,
+        "period_end": end_period,
         "keyword": normalize_room_name(keyword),
     }
     return params, None
@@ -241,91 +272,39 @@ def block_periods(block_name):
     return ()
 
 
+def block_bounds_error(period_start, period_end):
+    """大节范围取不出整块时返回错误描述，合法时返回 None。
+
+    入参是已经过 parse_bound 的整数或 None。起点必须是某块的第一小节；终点取 1 到 12 的
+    任意小节，它所在的大节整块纳入，所以 3–4 与 3–5 的覆盖块都只有 030405。起点落在块
+    中间时第一个块只有一半进范围，服务端按整块给格，读不出用户想要的区间，因此拒绝。
+    """
+    # 起点缺失或不落在某块的第一小节上时，第一个块只有一半进范围，不猜用户想查哪一块。
+    if period_start not in BLOCK_START_BOUNDS:
+        return BLOCK_BOUNDS_TEXT
+    # 终点缺失或超出可查的小节范围时拼不出闭区间，同样算参数失败。
+    if period_end is None or not PERIOD_RANGE[0] <= period_end <= PERIOD_RANGE[1]:
+        return BLOCK_BOUNDS_TEXT
+    # 起点晚于终点时闭区间为空，整块也没有交集，直接拒绝。
+    if period_start > period_end:
+        return "起始大节不能大于结束大节"
+    return None
+
+
 def query_blocks(period_start, period_end):
-    """取与查询闭区间相交的节次块名，按表头顺序返回。"""
+    """取与闭区间 [period_start, period_end] 相交的节次块名，按表头顺序返回。
+
+    范围按整块取：起点不在块首、终点超出 1 到 12 或起止倒置时没有可读的覆盖块，返回空
+    列表，调用方按参数失败处理，不发上游请求。
+    """
     start = parse_bound(period_start, *PERIOD_RANGE)
     end = parse_bound(period_end, *PERIOD_RANGE)
+    # 起点不在块首、终点越界或起止倒置时都拼不出整块，没有可读的覆盖块。
+    if start is None or end is None or block_bounds_error(start, end) is not None:
+        return []
     blocks = []
-    # 参数无效或起始大于结束时闭区间为空，没有块进入查询范围。
-    if start is None or end is None or start > end:
-        return blocks
     for name, periods in PERIOD_BLOCKS:
         # 块内任一小节落在闭区间内，整块都进查询范围。
         if any(start <= period <= end for period in periods):
             blocks.append(name)
     return blocks
-
-
-def expected_block_names():
-    """表头 35 列的块名顺序：星期 1 到 7 各重复 5 个块，共 35 格。"""
-    names = []
-    for _weekday in WEEKDAYS:
-        names.extend(name for name, _periods in PERIOD_BLOCKS)
-    return names
-
-
-def query_cells(period_start, period_end):
-    """取查询涉及的表头格，顺序与 35 列表头一致：每天先排完相交块。"""
-    cells = []
-    blocks = query_blocks(period_start, period_end)
-    for weekday in WEEKDAYS:
-        for block_name in blocks:
-            cells.append(
-                {
-                    "weekday": weekday,
-                    "block": block_name,
-                    "periods": list(block_periods(block_name)),
-                }
-            )
-    return cells
-
-
-def week_qualifier(text):
-    """取课程块里的单双限定词，返回「单」「双」或空串。
-
-    单和双同时出现在一个块里时无法判断各自作用的区间，按不加限定处理，宁可当作
-    有课，也不漏掉占用。
-    """
-    content = str(text if text is not None else "")
-    odd = "单" in content
-    even = "双" in content
-    # 两者都出现（或都没有）时不加过滤。
-    if odd == even:
-        return ""
-    return "单" if odd else "双"
-
-
-def filter_weeks(weeks, qualifier):
-    """按限定词过滤周次：单留奇数周，双留偶数周，没有限定词原样返回。"""
-    # 单：只留奇数周。
-    if qualifier == "单":
-        return {week for week in weeks if week % 2 == 1}
-    # 双：只留偶数周。
-    if qualifier == "双":
-        return {week for week in weeks if week % 2 == 0}
-    return set(weeks)
-
-
-def parse_weeks(text):
-    """从课程块文本解析周次，返回 (周次列表, 是否一个都没解析出来)。
-
-    `A-B周` 是闭区间，`A周` 是单周，逗号或顿号连接多个表达式取并集；单双限定词
-    作用于该块已解析出的周次，块里没有可用区间时作用于 1 到 30。一个周次都解析
-    不出来时按 1 到 30 全算有课，并让 weeks_unparsed 为 true。
-    """
-    weeks = set()
-    for match in WEEK_EXPRESSION_RE.finditer(str(text if text is not None else "")):
-        start = parse_bound(match.group(1), *WEEK_RANGE)
-        end = parse_bound(match.group(2), *WEEK_RANGE) if match.group(2) else start
-        # 端点越界或区间倒置的表达式直接丢弃，不猜它想表示哪几周。
-        if start is None or end is None or start > end:
-            continue
-        weeks.update(range(start, end + 1))
-    qualifier = week_qualifier(text)
-    # 限定词没有可作用的区间时作用于 1 到 30。
-    if qualifier:
-        weeks = filter_weeks(weeks or set(WEEK_FULL_RANGE), qualifier)
-    # 一个周次都没解析出来时按整学期处理，调用方据此保守判断该块有课。
-    if not weeks:
-        return list(WEEK_FULL_RANGE), True
-    return sorted(weeks), False

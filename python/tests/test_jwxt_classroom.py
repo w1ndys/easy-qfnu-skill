@@ -1,20 +1,20 @@
 import unittest
 
 from qfnu.jwxt_classroom import (
+    BLOCK_START_BOUNDS,
     PERIOD_BLOCKS,
+    block_bounds_error,
     expand_record,
     expand_room_name,
-    expected_block_names,
     normalize_room_name,
+    parse_academic_year,
     parse_semester,
-    parse_weeks,
     query_blocks,
-    query_cells,
-    semester_window,
     validate_query,
+    year_semester_list,
 )
 
-# 父页学期下拉的固定样本：最前面两项是未来学期。
+# 父页学期下拉的固定样本：含别的学年、未来学年与格式不符的项。
 SEMESTER_OPTIONS = (
     "2028-2029-1",
     "2027-2028-2",
@@ -24,42 +24,21 @@ SEMESTER_OPTIONS = (
     "2025-2026-3",
     "2025-2026-2",
     "2025-2026-1",
-    "2024-2025-3",
-    "2024-2025-2",
-    "2024-2025-1",
-    "2023-2024-3",
-    "2023-2024-2",
-    "2023-2024-1",
-    "2022-2023-3",
-    "2022-2023-2",
-    "2022-2023-1",
-    "2021-2022-2",
-    "2021-2022-1",
 )
 
-# 页面当前选中学期，窗口上界。
+# 查询目标学期，本学年是 2026-2027。
 SELECTED_SEMESTER = "2026-2027-1"
 
-# 不晚于选中学期的项有 15 个，窗口只保留最近 13 个，丢掉 2021-2022 的两个。
-EXPECTED_WINDOW = (
-    "2026-2027-1",
-    "2025-2026-3",
-    "2025-2026-2",
-    "2025-2026-1",
-    "2024-2025-3",
-    "2024-2025-2",
-    "2024-2025-1",
-    "2023-2024-3",
-    "2023-2024-2",
-    "2023-2024-1",
-    "2022-2023-3",
-    "2022-2023-2",
-    "2022-2023-1",
-)
+# 本学年学期列表：只含目标学年的秋、春、夏，按季节从秋到夏排列。
+EXPECTED_YEAR_SEMESTERS = ["2026-2027-1", "2026-2027-2", "2026-2027-3"]
+
+# 大节范围的允许取值，用于断言拒绝提示里给出了取值。
+START_OPTIONS_TEXT = "1/3/6/8/10"
+END_OPTIONS_TEXT = "1 到 12"
 
 
 class ClassroomQueryValidationTest(unittest.TestCase):
-    """任务 1.1：参数校验只返回失败结果，不碰网络。"""
+    """任务 4.1：参数校验只返回失败结果，不碰网络。"""
 
     def assert_rejected(self, error, parameter):
         """断言失败结果 ok 为 false，并点出无效的参数名。"""
@@ -70,68 +49,134 @@ class ClassroomQueryValidationTest(unittest.TestCase):
         self.assertNotIn("rooms", error)
 
     def test_valid_query_returns_parsed_parameters(self):
-        params, error = validate_query("2026-2027-1", "6", "1", "1", "2")
+        params, error = validate_query("2026-2027-1", "6", "8", "1", "1", "2")
         self.assertIsNone(error)
         self.assertEqual(params["semester"], "2026-2027-1")
-        self.assertEqual(params["week"], 6)
+        self.assertEqual(params["week_start"], 6)
+        self.assertEqual(params["week_end"], 8)
         self.assertEqual(params["weekday"], 1)
         self.assertEqual(params["period_start"], 1)
         self.assertEqual(params["period_end"], 2)
         self.assertEqual(params["keyword"], "")
 
-    def test_boundary_values_are_accepted(self):
-        params, error = validate_query("2026-2027-1", 1, 7, 12, 12)
+    def test_single_week_keeps_start_and_end_equal(self):
+        """只给起始周次时结束周次等于起始周次。"""
+        params, error = validate_query("2026-2027-1", 6, None, 1, 1, 2)
         self.assertIsNone(error)
-        self.assertEqual(params["week"], 1)
+        self.assertEqual(params["week_start"], 6)
+        self.assertEqual(params["week_end"], 6)
+
+    def test_empty_week_end_is_treated_as_omitted(self):
+        params, error = validate_query("2026-2027-1", "30", "", 7, 10, 12)
+        self.assertIsNone(error)
+        self.assertEqual(params["week_start"], 30)
+        self.assertEqual(params["week_end"], 30)
+
+    def test_week_and_period_boundary_values_are_accepted(self):
+        params, error = validate_query("2026-2027-1", 1, 30, 7, 1, 12)
+        self.assertIsNone(error)
+        self.assertEqual(params["week_start"], 1)
+        self.assertEqual(params["week_end"], 30)
         self.assertEqual(params["weekday"], 7)
-        self.assertEqual(params["period_start"], 12)
-        _params, error = validate_query("2026-2027-1", 30, 1, 1, 1)
-        self.assertIsNone(error)
 
     def test_invalid_semester_format_is_rejected(self):
         for value in ("", "2026-2027", "2026-2027-4", "2026-2027-1-1", "全部"):
-            _params, error = validate_query(value, 6, 1, 1, 2)
+            _params, error = validate_query(value, 6, 6, 1, 1, 2)
             self.assert_rejected(error, "semester")
 
-    def test_week_out_of_range_is_rejected(self):
+    def test_week_start_out_of_range_is_rejected(self):
         for value in ("", 0, 31, -1, "abc", 6.5):
-            _params, error = validate_query("2026-2027-1", value, 1, 1, 2)
-            self.assert_rejected(error, "week")
+            _params, error = validate_query("2026-2027-1", value, None, 1, 1, 2)
+            self.assert_rejected(error, "week_start")
+
+    def test_week_end_out_of_range_is_rejected(self):
+        # 空串表示省略结束周次，不算越界，所以这里只放真正的越界值。
+        for value in (0, 31, -1, "abc", 6.5):
+            _params, error = validate_query("2026-2027-1", 6, value, 1, 1, 2)
+            self.assert_rejected(error, "week_end")
+
+    def test_week_start_after_week_end_is_rejected(self):
+        _params, error = validate_query("2026-2027-1", 8, 6, 1, 1, 2)
+        self.assert_rejected(error, "week_start")
+        self.assertIn("week_end", error["error"])
 
     def test_weekday_out_of_range_is_rejected(self):
-        for value in ("", 0, 8, "星期一", -1):
-            _params, error = validate_query("2026-2027-1", 6, value, 1, 2)
+        for value in ("", 0, 8, "星期一", -1, 1.5):
+            _params, error = validate_query("2026-2027-1", 6, 6, value, 1, 2)
             self.assert_rejected(error, "weekday")
 
-    def test_period_out_of_range_is_rejected(self):
-        for value in ("", 0, 13, "第1节", -1):
-            _params, error = validate_query("2026-2027-1", 6, 1, value, 2)
-            self.assert_rejected(error, "period_start")
-            _params, error = validate_query("2026-2027-1", 6, 1, 1, value)
-            self.assert_rejected(error, "period_end")
+    def test_weekday_multi_day_writing_is_rejected(self):
+        """星期只查一天：多天写法会把不同天的格混在一次响应里，一律拒绝。"""
+        for value in ("1,3", "1-3", "1、3", "1 3", "1;3"):
+            _params, error = validate_query("2026-2027-1", 6, 6, value, 1, 2)
+            self.assert_rejected(error, "weekday")
+            self.assertIn("单天", error["error"])
 
-    def test_period_start_after_period_end_is_rejected(self):
-        _params, error = validate_query("2026-2027-1", 6, 1, 5, 3)
-        self.assert_rejected(error, "period_start")
-        self.assertIn("period_end", error["error"])
+    def test_block_aligned_periods_are_accepted(self):
+        """起点落在块首就接受，终点写块内任意小节：3–4 与 3–5 覆盖同一块。"""
+        ranges = (
+            (1, 2), (3, 5), (6, 7), (8, 9), (10, 12),
+            (1, 5), (6, 8), (1, 7), (3, 8), (1, 12),
+            (3, 4), (1, 4), (1, 11), (6, 9),
+        )
+        for start, end in ranges:
+            params, error = validate_query("2026-2027-1", 6, 6, 1, start, end)
+            self.assertIsNone(error, (start, end))
+            self.assertEqual(params["period_start"], start)
+            self.assertEqual(params["period_end"], end)
+
+    def test_period_off_block_boundary_is_rejected(self):
+        """4–4、2–5 这类起点落在块中间的写法不猜用户想查哪一块，拒绝并列出允许取值。"""
+        rejected = ((4, 4), (2, 5), (5, 3), (4, 12), (9, 12), (2, 3), (5, 12))
+        for start, end in rejected:
+            _params, error = validate_query("2026-2027-1", 6, 6, 1, start, end)
+            self.assert_rejected(error, "period_start")
+            self.assertIn("period_end", error["error"])
+            self.assertIn(START_OPTIONS_TEXT, error["error"])
+            self.assertIn(END_OPTIONS_TEXT, error["error"])
+
+    def test_period_out_of_range_is_rejected(self):
+        for start, end in (("", 2), ("第1节", 2), (0, 12), (1, 13), (1, 0), (13, 12)):
+            _params, error = validate_query("2026-2027-1", 6, 6, 1, start, end)
+            self.assert_rejected(error, "period_start")
+            self.assertIn(START_OPTIONS_TEXT, error["error"])
+            self.assertIn(END_OPTIONS_TEXT, error["error"])
+
+    def test_period_range_reversed_is_rejected(self):
+        """起点落在块首但顺序倒置时闭区间为空。"""
+        for start, end in ((3, 2), (6, 5), (10, 9)):
+            _params, error = validate_query("2026-2027-1", 6, 6, 1, start, end)
+            self.assert_rejected(error, "period_start")
+            self.assertIn("period_end", error["error"])
+    def test_omitted_period_end_equals_start(self):
+        """省略结束大节时结束值等于起始值，只查起始大节所在的那一块。"""
+        params, error = validate_query("2026-2027-1", 6, 6, 1, 6, None)
+        self.assertIsNone(error)
+        self.assertEqual(params["period_start"], 6)
+        self.assertEqual(params["period_end"], 6)
+        params, error = validate_query("2026-2027-1", 6, 6, 1, 1, "")
+        self.assertIsNone(error)
+        self.assertEqual(params["period_end"], 1)
 
     def test_keyword_may_be_empty_and_is_normalized(self):
-        params, error = validate_query("2026-2027-1", 6, 1, 1, 2, "")
+        params, error = validate_query("2026-2027-1", 6, 6, 1, 1, 2, "")
         self.assertIsNone(error)
         self.assertEqual(params["keyword"], "")
-        params, error = validate_query("2026-2027-1", 6, 1, 1, 2, "  数学楼　４０１ ")
+        params, error = validate_query("2026-2027-1", 6, 6, 1, 1, 2, "  数学楼　４０１ ")
         self.assertIsNone(error)
         self.assertEqual(params["keyword"], "数学楼 401")
 
     def test_rejection_does_not_touch_upstream(self):
         """校验失败只返回失败结果，调用方拿不到可发请求的参数。"""
-        params, error = validate_query("2026-2027-1", 31, 1, 1, 2)
-        self.assertIsNone(params)
-        self.assertEqual(error["source"], "jwxt")
+        rejected = ((31, None, 1, 1, 2), (6, 6, 1, 4, 4), (6, 6, 1, 2, 5), (6, 6, 1, 0, 12))
+        for week_start, week_end, weekday, start, end in rejected:
+            params, error = validate_query("2026-2027-1", week_start, week_end, weekday, start, end)
+            self.assertIsNone(params)
+            self.assertEqual(error["source"], "jwxt")
 
 
-class ClassroomSemesterWindowTest(unittest.TestCase):
-    """任务 1.2：学期比较与遍历窗口。"""
+class ClassroomYearSemesterTest(unittest.TestCase):
+    """任务 4.1：学期解析与本学年学期列表。"""
 
     def test_parse_semester_keeps_start_year_and_term(self):
         self.assertEqual(parse_semester("2026-2027-1"), (2026, 1))
@@ -143,53 +188,68 @@ class ClassroomSemesterWindowTest(unittest.TestCase):
             self.assertIsNone(parse_semester(value))
         self.assertIsNone(parse_semester(None))
 
-    def test_window_keeps_thirteen_recent_semesters(self):
-        window, warnings = semester_window(SEMESTER_OPTIONS, SELECTED_SEMESTER)
-        self.assertEqual(window, list(EXPECTED_WINDOW))
-        self.assertEqual(len(window), 13)
+    def test_parse_academic_year_takes_the_first_two_segments(self):
+        self.assertEqual(parse_academic_year("2026-2027-1"), "2026-2027")
+        self.assertEqual(parse_academic_year(" 2026-2027-3 "), "2026-2027")
+        # 末位季节不同不影响学年，换了学年就不是同一个本学年。
+        self.assertEqual(parse_academic_year("2026-2027-2"), "2026-2027")
+        self.assertNotEqual(parse_academic_year("2027-2028-1"), "2026-2027")
+
+    def test_parse_academic_year_rejects_malformed_values(self):
+        for value in ("", "全部", "2026-2027", "2026-2027-4"):
+            self.assertIsNone(parse_academic_year(value))
+        self.assertIsNone(parse_academic_year(None))
+
+    def test_year_list_keeps_only_the_target_academic_year(self):
+        semesters, warnings = year_semester_list(SEMESTER_OPTIONS, SELECTED_SEMESTER)
+        self.assertEqual(semesters, EXPECTED_YEAR_SEMESTERS)
+        self.assertEqual(warnings, [])
+        for other in ("2028-2029-1", "2027-2028-2", "2025-2026-3", "2025-2026-2", "2025-2026-1"):
+            self.assertNotIn(other, semesters)
+
+    def test_year_list_is_the_same_from_any_term_of_that_year(self):
+        """目标学期是春季或夏季时，取到的还是同一个学年的学期。"""
+        for target in ("2026-2027-2", "2026-2027-3"):
+            semesters, warnings = year_semester_list(SEMESTER_OPTIONS, target)
+            self.assertEqual(semesters, EXPECTED_YEAR_SEMESTERS)
+            self.assertEqual(warnings, [])
+
+    def test_year_list_skips_missing_summer(self):
+        """下拉里没有夏季项时列表只有秋、春两项。"""
+        options = ("2026-2027-2", "2026-2027-1", "2025-2026-1")
+        semesters, warnings = year_semester_list(options, SELECTED_SEMESTER)
+        self.assertEqual(semesters, ["2026-2027-1", "2026-2027-2"])
         self.assertEqual(warnings, [])
 
-    def test_window_uses_all_options_when_fewer_than_thirteen(self):
-        options = ("2026-2027-1", "2025-2026-3", "2025-2026-2")
-        window, warnings = semester_window(options, SELECTED_SEMESTER)
-        self.assertEqual(window, ["2026-2027-1", "2025-2026-3", "2025-2026-2"])
-        self.assertEqual(warnings, [])
-
-    def test_window_excludes_semesters_after_selected(self):
-        window, _warnings = semester_window(SEMESTER_OPTIONS, SELECTED_SEMESTER)
-        self.assertEqual(window[0], "2026-2027-1")
-        # 同年末位更大的学期（春季、夏季）和未来学年都晚于选中学期，不进窗口。
-        for later in ("2026-2027-2", "2026-2027-3", "2027-2028-2", "2028-2029-1"):
-            self.assertNotIn(later, window)
-
-    def test_window_skips_malformed_options_with_warning(self):
-        options = ("全部", "", "2026-2027-0", SELECTED_SEMESTER, "2025-2026-3")
-        window, warnings = semester_window(options, SELECTED_SEMESTER)
-        self.assertEqual(window, ["2026-2027-1", "2025-2026-3"])
+    def test_year_list_skips_malformed_options_with_warning(self):
+        options = ("全部", "", "2026-2027-0", SELECTED_SEMESTER, "2026-2027-2")
+        semesters, warnings = year_semester_list(options, SELECTED_SEMESTER)
+        self.assertEqual(semesters, ["2026-2027-1", "2026-2027-2"])
         self.assertEqual(
             warnings,
             ["学期下拉项格式不符，已跳过: 全部", "学期下拉项格式不符，已跳过: 2026-2027-0"],
         )
 
-    def test_window_does_not_depend_on_dropdown_order(self):
-        options = ("2025-2026-3", "2024-2025-2", SELECTED_SEMESTER)
-        window, _warnings = semester_window(options, SELECTED_SEMESTER)
-        self.assertEqual(window, ["2026-2027-1", "2025-2026-3", "2024-2025-2"])
+    def test_year_list_does_not_depend_on_dropdown_order(self):
+        options = ("2026-2027-3", "2026-2027-2", "2026-2027-1")
+        semesters, _warnings = year_semester_list(options, SELECTED_SEMESTER)
+        self.assertEqual(semesters, EXPECTED_YEAR_SEMESTERS)
 
-    def test_window_rejects_page_without_selected_semester(self):
-        for selected in ("", "全部"):
-            window, warnings = semester_window(SEMESTER_OPTIONS, selected)
-            self.assertIsNone(window)
+    def test_year_list_rejects_page_without_target_semester(self):
+        for target in ("", "全部", None):
+            semesters, warnings = year_semester_list(SEMESTER_OPTIONS, target)
+            self.assertIsNone(semesters)
             self.assertEqual(warnings, [])
 
-    def test_window_of_empty_dropdown_is_empty(self):
-        window, warnings = semester_window((), SELECTED_SEMESTER)
-        self.assertEqual(window, [])
-        self.assertEqual(warnings, [])
+    def test_year_list_rejects_dropdown_without_that_year(self):
+        """该学年一项都没有时拒绝查询，也不把别的学年的学期顶上。"""
+        for options in ((), ("2025-2026-1", "2025-2026-2"), ("2027-2028-1",)):
+            semesters, _warnings = year_semester_list(options, SELECTED_SEMESTER)
+            self.assertIsNone(semesters)
 
 
-class ClassroomBlockAndNameTest(unittest.TestCase):
-    """任务 1：固定节次块映射与名称规范化。"""
+class ClassroomBlockRangeTest(unittest.TestCase):
+    """任务 4.2：大节对齐与覆盖块。"""
 
     def test_period_blocks_follow_design_table(self):
         self.assertEqual(
@@ -203,36 +263,52 @@ class ClassroomBlockAndNameTest(unittest.TestCase):
             ),
         )
 
-    def test_expected_block_names_repeat_five_blocks_for_seven_days(self):
-        names = expected_block_names()
-        self.assertEqual(len(names), 35)
-        self.assertEqual(names[:5], ["0102", "030405", "0607", "0809", "101112"])
-        self.assertEqual(names[5:10], names[:5])
-        self.assertEqual(names[30:], names[:5])
+    def test_block_start_bounds_are_the_first_period_of_each_block(self):
+        """起点只能是各块的第一小节；终点不再受块限制，因此没有对应的常量。"""
+        self.assertEqual(BLOCK_START_BOUNDS, (1, 3, 6, 8, 10))
 
-    def test_query_blocks_takes_whole_block_on_any_overlap(self):
+    def test_block_bounds_error_names_allowed_values(self):
+        self.assertIsNone(block_bounds_error(1, 12))
+        self.assertIsNone(block_bounds_error(6, 8))
+        self.assertIsNone(block_bounds_error(3, 4))
+        for start, end in ((4, 4), (2, 5), (2, 3), (0, 12), (1, 13), (None, 5), (3, None)):
+            message = block_bounds_error(start, end)
+            self.assertIsNotNone(message, (start, end))
+            self.assertIn(START_OPTIONS_TEXT, message)
+            self.assertIn(END_OPTIONS_TEXT, message)
+
+    def test_block_bounds_error_reports_reversed_blocks(self):
+        self.assertEqual(block_bounds_error(3, 2), "起始大节不能大于结束大节")
+
+    def test_query_blocks_returns_covered_blocks(self):
         self.assertEqual(query_blocks(1, 2), ["0102"])
-        self.assertEqual(query_blocks(3, 3), ["030405"])
-        self.assertEqual(query_blocks(2, 3), ["0102", "030405"])
-        self.assertEqual(query_blocks(11, 12), ["101112"])
+        self.assertEqual(query_blocks(3, 5), ["030405"])
+        self.assertEqual(query_blocks(1, 5), ["0102", "030405"])
+        self.assertEqual(query_blocks(6, 8), ["0607", "0809"])
+        self.assertEqual(query_blocks(1, 7), ["0102", "030405", "0607"])
+        self.assertEqual(query_blocks(3, 8), ["030405", "0607", "0809"])
+        self.assertEqual(query_blocks(1, 11), ["0102", "030405", "0607", "0809", "101112"])
         self.assertEqual(query_blocks(1, 12), ["0102", "030405", "0607", "0809", "101112"])
 
-    def test_query_blocks_rejects_empty_or_invalid_range(self):
-        self.assertEqual(query_blocks(5, 3), [])
-        self.assertEqual(query_blocks(0, 2), [])
-        self.assertEqual(query_blocks(1, 13), [])
-        self.assertEqual(query_blocks("", 2), [])
+    def test_end_inside_a_block_covers_that_whole_block(self):
+        """终点写块内任意小节都按整块纳入：3–3、3–4、3–5 的覆盖块相同。"""
+        self.assertEqual(query_blocks(6, 8), ["0607", "0809"])
+        self.assertEqual(query_blocks(6, 8), query_blocks(6, 9))
+        self.assertEqual(query_blocks(3, 3), ["030405"])
+        self.assertEqual(query_blocks(3, 4), query_blocks(3, 5))
 
-    def test_query_cells_repeat_blocks_for_each_weekday(self):
-        cells = query_cells(1, 2)
-        self.assertEqual(len(cells), 7)
-        self.assertEqual([cell["weekday"] for cell in cells], [1, 2, 3, 4, 5, 6, 7])
-        self.assertEqual(cells[0]["periods"], [1, 2])
-        self.assertTrue(all(cell["block"] == "0102" for cell in cells))
-        full = query_cells(1, 12)
-        self.assertEqual(len(full), 35)
-        self.assertEqual([cell["block"] for cell in full[:5]], expected_block_names()[:5])
-        self.assertEqual([cell["weekday"] for cell in full[:5]], [1, 1, 1, 1, 1])
+    def test_query_blocks_accepts_string_parameters(self):
+        self.assertEqual(query_blocks("1", "5"), ["0102", "030405"])
+
+    def test_query_blocks_rejects_ranges_off_block_boundary(self):
+        # 起点必须是某块的第一小节；终点越界或起止倒置时同样拼不出整块。
+        rejected = ((4, 4), (2, 5), (5, 3), (4, 12), (9, 12), (2, 3), (0, 12), (1, 13), ("", 2), (1, ""), (3, None))
+        for start, end in rejected:
+            self.assertEqual(query_blocks(start, end), [], (start, end))
+
+    def test_query_blocks_rejects_aligned_but_reversed(self):
+        self.assertEqual(query_blocks(3, 2), [])
+        self.assertEqual(query_blocks(10, 9), [])
 
     def test_normalize_room_name_trims_and_collapses_whitespace(self):
         self.assertEqual(normalize_room_name("  格物楼B101 "), "格物楼B101")
@@ -325,54 +401,6 @@ class ClassroomRoomExpansionTest(unittest.TestCase):
         self.assertFalse(record["expanded"])
         self.assertEqual(record["jsmc"], "演播厅")
         self.assertEqual(record["source_jsid"], "JSID-1")
-
-
-class ClassroomWeekParsingTest(unittest.TestCase):
-    """任务 2.2：课程块周次解析。"""
-
-    def test_range_is_a_closed_interval(self):
-        self.assertEqual(parse_weeks("1-3周"), ([1, 2, 3], False))
-
-    def test_single_week_is_one_week(self):
-        self.assertEqual(parse_weeks("6周"), ([6], False))
-        self.assertEqual(parse_weeks("第6周"), ([6], False))
-
-    def test_comma_and_dunhao_join_intervals(self):
-        self.assertEqual(parse_weeks("1-2周,4周"), ([1, 2, 4], False))
-        self.assertEqual(parse_weeks("1-2周、4周"), ([1, 2, 4], False))
-        self.assertEqual(parse_weeks("1-2周,5-6周"), ([1, 2, 5, 6], False))
-
-    def test_odd_qualifier_keeps_odd_weeks(self):
-        self.assertEqual(parse_weeks("1-6周(单)"), ([1, 3, 5], False))
-        self.assertEqual(parse_weeks("单周"), (list(range(1, 31, 2)), False))
-
-    def test_even_qualifier_keeps_even_weeks(self):
-        self.assertEqual(parse_weeks("1-6周(双)"), ([2, 4, 6], False))
-        self.assertEqual(parse_weeks("双周"), (list(range(2, 31, 2)), False))
-
-    def test_qualifier_filters_every_interval_of_the_block(self):
-        """限定词作用于该块已解析出的区间，块里没有区间时才作用于 1 到 30。"""
-        self.assertEqual(parse_weeks("1-4周(单),6周"), ([1, 3], False))
-        self.assertEqual(parse_weeks("单"), (list(range(1, 31, 2)), False))
-
-    def test_odd_and_even_together_do_not_filter(self):
-        """一个块里同时写单和双时无法判断各自范围，按不加限定处理。"""
-        self.assertEqual(parse_weeks("1-2周(单),3-4周(双)"), ([1, 2, 3, 4], False))
-
-    def test_unparsable_weeks_take_the_whole_semester(self):
-        for value in ("", "详见教务", None):
-            weeks, unparsed = parse_weeks(value)
-            self.assertTrue(unparsed, value)
-            self.assertEqual(weeks, list(range(1, 31)))
-
-    def test_out_of_range_and_reversed_expressions_are_dropped(self):
-        for value in ("31周", "0周", "16-1周"):
-            weeks, unparsed = parse_weeks(value)
-            self.assertTrue(unparsed, value)
-            self.assertEqual(weeks, list(range(1, 31)))
-
-    def test_week_list_is_sorted_and_unique(self):
-        self.assertEqual(parse_weeks("4周,4周,1-2周"), ([1, 2, 4], False))
 
 
 if __name__ == "__main__":
