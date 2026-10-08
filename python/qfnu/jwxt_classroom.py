@@ -95,21 +95,17 @@ GRID_CELL_COUNT = len(GRID_BLOCK_NAMES)
 
 # 登录页或会话失效时的提示：只能重新登录。
 LOGIN_HINT = "请运行 easy-qfnu jwxt login 重新登录后重试"
-# 页面未被识别时的提示：路径误写成 kbxx 会返回非法访问。
-PAGE_HINT = "确认接口路径是 kbcx 后重试"
+# 页面未被识别时的提示：路径误写成 kbxx，或接口入参与以前不一样了。
+PAGE_HINT = "接口路径或入参可能已变化，请确认路径仍是 kbcx 后重试"
 # 父页缺少学期选中项或节次模式时的提示。
 PARENT_HINT = "请从教务侧栏重新进入「全校性教室课表」后再试"
-# 课表结构不符预期时的提示：不能按缺失的列推断空闲。
-GRID_HINT = "课表结构与预期不符，请确认教务是否改版后重试"
-# 字典不可用时的提示：旧字典能不能继续用由调用方按缓存期限判断。
-DICTIONARY_HINT = "请稍后重试；本地有 7 日内旧字典时仍可继续使用旧字典"
+# 课表结构不符预期时的提示：不能按缺失的列推断空闲，这类页面同样不重试。
+GRID_HINT = "接口路径或入参可能已变化，请确认教务课表是否改版后重试"
 
 # 缓存目录的环境变量：改的是目录，不是文件名。
 CACHE_ENV_VAR = "QFNU_CLASSROOM_CACHE_PATH"
-# 状态目录下的缓存子目录名，字典文件与各学期文件都放这里。
+# 状态目录下的缓存子目录名，各学期的教室名文件都放这里。
 CACHE_DIR_NAME = "classroom-schedule"
-# 字典缓存文件名。
-DICTIONARY_CACHE_NAME = "dictionary.json"
 # 学期缓存文件名后缀，学期值加它拼成 <学期>.json。
 SEMESTER_CACHE_SUFFIX = ".json"
 # 缓存有效期天数：超过 7 日才刷新，正好满 7 日仍算可用。
@@ -123,6 +119,13 @@ SEMESTER_MIN_ROOMS = {
     "3": 50,  # 夏季开课少，阈值低
 }
 
+# 内置教室总表：随仓库分发的一次抓取快照，运行时只读它，不再请求教室字典接口。
+ROSTER_FILE_NAME = "classroom-roster.json"
+# 总表与本模块同目录，随包一起分发。
+ROSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ROSTER_FILE_NAME)
+# 总表不可用时的警告前缀，后面接具体原因；此时 jsid 与全年无课计数不可用。
+ROSTER_UNAVAILABLE_WARNING = "内置教室总表不可用，jsid 与全年无课计数不可用: "
+
 # 页面标题，用来区分登录页、非法访问页与目标页面。
 TITLE_RE = re.compile(r"(?is)<title\b[^>]*>(.*?)</title\s*>")
 # 下拉的 option：第 1 组是完整开标签，第 2 组是显示文本。
@@ -130,32 +133,31 @@ OPTION_RE = re.compile(r"(?is)(<option\b[^>]*>)(.*?)</option\s*>")
 # 数据格里的 div 开标签：class 带 kbcontent 就是课程块结构。
 DIV_TAG_RE = re.compile(r"(?is)<div\b([^>]*)>")
 
-# 请求层常量：三个学生端教室接口的地址、请求头与重试次数。
+# 请求层常量：两个学生端教室接口的地址、请求头与重试次数。
 
 # 父页：读学期下拉与当前节次模式，路径段必须是 kbcx。
 CLASSROOM_PAGE_URL = JWXT_BASE + "/jsxsd/kbcx/kbxx_classroom"
-# 教室字典：空 skjs 加 maxRow 取全量名单，路径段同样是 kbcx。
-CLASSROOM_DICTIONARY_URL = JWXT_BASE + "/jsxsd/kbcx/queryJs2"
 # 教室课表：学期教室名与本次查询都用它；路径误写成 kbxx 会返回非法访问。
 CLASSROOM_IFR_URL = JWXT_BASE + "/jsxsd/kbcx/kbxx_classroom_ifr"
 # 两个 POST 的 Referer 是父页，与浏览器从父页发起请求时的写法一致。
 CLASSROOM_REFERER = CLASSROOM_PAGE_URL
-# 教室请求专用的桌面版 Chrome 标识：只作用于这三条请求，不动 jwxt_client 的全局 UA。
+# 教室请求专用的桌面版 Chrome 标识：只作用于这两条请求，不动 jwxt_client 的全局 UA。
 CLASSROOM_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
 )
 # 两个 POST 的表单编码类型，与既有 jwxt 请求保持一致。
 FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
-# 字典请求的 maxRow：实测全量 2452 条，等于它说明名单被上限截断。
-DICTIONARY_MAX_ROW = 5000
-# 请求次数上限：首次之外最多再请求 2 次，用于传输被掐断或正文残缺。
+# 请求次数上限：首次之外最多再重发 2 次，用于传输被掐断与正文不完整。
 FETCH_ATTEMPTS = 3
-# 传输中断的提示：这类失败与参数无关，重试由本模块负责。
+# 传输中断的提示：这类失败与参数无关，重发由本模块负责。
 TRANSPORT_HINT = "响应传输中断，请稍后重试"
-# 串行刷新的资源名：父页与字典各一份，学期按学期值分开。
+# 正文连续不完整时的口径：说明响应没传完，与接口路径或入参无关。
+INCOMPLETE_TEXT = "响应不完整"
+# 正文不完整时的提示：不指向接口契约，只提示稍后重试。
+INCOMPLETE_HINT = "请稍后重试；课表多次不完整时请确认教务是否改版"
+# 串行刷新的资源名：父页一份，学期按学期值分开。
 CLASSROOM_PAGE_RESOURCE = "classroom-page"
-CLASSROOM_DICTIONARY_RESOURCE = "classroom-dictionary"
 SEMESTER_RESOURCE_PREFIX = "semester:"
 
 def parse_semester(value):
@@ -298,7 +300,7 @@ def expand_room_name(name):
 
 
 def expand_record(jsid, jsmc):
-    """展开一条字典记录，返回 jsid、jsmc、rooms、source_jsid 与 expanded。
+    """展开一条总表记录，返回 jsid、jsmc、rooms、source_jsid 与 expanded。
 
     合称记录的 jsid 只记在 source_jsid 上，不按展开出的教室拆成多个 ID。
     """
@@ -534,64 +536,121 @@ def parse_classroom_page(raw):
         return None, failure("jwxt", "父页没有 kbjcmsid，该学期节次模式不可用", PARENT_HINT)
     return {"semesters": semesters, "selected": selected, "kbjcmsid": mode}, None
 
-def parse_dictionary(text, max_row):
-    """解析 queryJs2 的 JSON，返回 (字典, 失败结果)。
+# 内置总表层：读随仓库分发的快照并展开成与既有字典解析一致的形状，全部不抛异常。
 
-    字典含 max_row、records 与 warnings，每条记录只收 jsid 与 jsmc。result 不是 true，
-    或 list 长度等于请求的 max_row（说明名单被上限截断）时拒绝该次名单：残缺名单不能当成
-    教室全集。已发布的教室总表只作规模参照，不作运行时输入。
+
+def read_roster_json(path):
+    """读总表数据文件并解成 JSON 对象，返回 (对象, 失败说明)。
+
+    文件缺失、读不动或内容不是合法 JSON 时返回 (None, 说明)：总表是本地数据文件，读不出来
+    只影响 jsid 与全年无课计数，不该让整个查询失败。
     """
     try:
-        data = json.loads(text)
-    except (TypeError, ValueError):
-        return None, failure("jwxt", "教室字典响应不是合法 JSON", DICTIONARY_HINT)
-    # 响应不是对象时取不出 result 与 list。
-    if not isinstance(data, dict):
-        return None, failure("jwxt", "教室字典响应的结构不是对象", DICTIONARY_HINT)
-    # result 不是 true 说明这次请求没拿到名单，不能用它当全集。
-    if data.get("result") is not True:
-        return None, failure("jwxt", "教室字典返回的 result 不是 true", DICTIONARY_HINT)
-    raw_list = data.get("list")
-    # list 不是数组时同样取不出记录。
-    if not isinstance(raw_list, list):
-        return None, failure("jwxt", "教室字典返回的 list 不是数组", DICTIONARY_HINT)
-    # 长度等于请求上限说明名单被截断，残缺名单不能当成全集。
-    if len(raw_list) == max_row:
-        message = "教室字典被截断: list 长度 " + str(len(raw_list)) + " 等于 maxRow"
-        return None, failure("jwxt", message, DICTIONARY_HINT)
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle), ""
+    except (OSError, ValueError) as exc:
+        return None, "文件读不出或不是合法 JSON: " + str(exc)
+
+
+def empty_roster(reason):
+    """取空的全集字典：总表不可用时下游仍拿到同一形状，原因记成一条警告。"""
+    return {
+        "max_row": 0,
+        "captured_at": "",
+        "records": [],
+        "warnings": [ROSTER_UNAVAILABLE_WARNING + reason],
+    }
+
+
+def roster_items(payload):
+    """取总表里的房间列表，返回 (列表, 失败说明)。
+
+    顶层不是对象、rooms 不是数组或某条不是 [jsid, jsmc] 两元数组时返回 (None, 说明)：形状
+    不对说明整份快照都不可信，不能跳过坏条目、把剩下的残缺名单当教室全集。
+    """
+    # 顶层不是对象时取不出 rooms 字段。
+    if not isinstance(payload, dict):
+        return None, "顶层不是对象"
+    items = payload.get("rooms")
+    # rooms 不是数组时取不出任何教室记录。
+    if not isinstance(items, list):
+        return None, "rooms 不是数组"
+    for item in items:
+        # 一条记录必须是 [jsid, jsmc] 两元数组，否则取不出教室身份与展示名。
+        if not isinstance(item, list) or len(item) != 2:
+            return None, "rooms 里有条目不是两元数组"
+    return items, ""
+
+
+def roster_record(jsid, jsmc, warnings):
+    """展开总表的一条两元记录，返回记录字典；缺 jsid 或 jsmc 时返回 None。
+
+    合称记录的 jsid 只记在 source_jsid 上，不按展开出的教室拆成多个 ID；展开失败的展示名
+    仍留在记录里，只是进不了不上课结果，原文进警告。
+    """
+    identity = str(jsid if jsid is not None else "").strip()
+    display = str(jsmc if jsmc is not None else "").strip()
+    # 缺 jsid 的记录对不上教室身份，缺 jsmc 的没有展示名，都只能跳过。
+    if not identity or not display:
+        warnings.append("内置教室总表条目缺少 jsid 或 jsmc，已跳过: " + (identity or display or "(空)"))
+        return None
+    record = expand_record(identity, display)
+    # 展开不出房号的展示名不能进不上课结果，原文进警告。
+    if not record["expanded"]:
+        warnings.append("教室名无法展开，不进不上课结果: " + display)
+    return record
+
+
+def parse_roster(payload):
+    """把内置总表对象展开成与既有字典解析一致的形状。
+
+    顶层不是对象、rooms 不是数组或条目不是两元数组时返回空记录集并记一条警告：这种快照不能
+    当教室全集，全集退化成「本学年各学期课表首格展开出的教室名」。max_row 只是抓取口径。
+    """
+    items, reason = roster_items(payload)
+    # 形状不符时整份总表都不可信，返回空记录集加警告，让查询继续。
+    if items is None:
+        return empty_roster(reason)
+    max_row = payload.get("max_row")
+    # max_row 只作记录用，不是整数时记 0。
+    if not isinstance(max_row, int):
+        max_row = 0
     records = []
     warnings = []
-    for item in raw_list:
-        record = dictionary_record(item, warnings)
-        # 取不出 jsid 或 jsmc 的记录不进字典，警告已在解析那条记录时记下。
+    for jsid, jsmc in items:
+        record = roster_record(jsid, jsmc, warnings)
+        # 两元数组里取不出 jsid 或 jsmc 的条目跳过，警告已在那条记录里记下。
         if record is None:
             continue
         records.append(record)
-    dictionary = {"max_row": max_row, "records": records, "warnings": warnings}
-    return dictionary, None
+    return {
+        "max_row": max_row,
+        "captured_at": str(payload.get("captured_at") or ""),
+        "records": records,
+        "warnings": warnings,
+    }
 
 
-def dictionary_record(item, warnings):
-    """把一条字典记录解成 jsid、jsmc 与展开结果；取不出 jsid 或 jsmc 时返回 None。
+def load_roster(path=None):
+    """读内置教室总表数据文件，返回与字典解析一致的形状。
 
-    只收 jsid 与 jsmc，其他字段一律不进字典。展开不出房号的展示名仍留在字典里并记警告：
-    它不能进不上课结果。
+    文件缺失、读不动、JSON 不合法或结构不符时返回空记录集加一条警告：全集退化为「本学年各
+    学期课表首格展开出的教室名」，jsid 与全年无课计数不可用，查询照常继续。函数不发请求。
     """
-    # 不是对象的条目取不出这两个字段。
-    if not isinstance(item, dict):
-        warnings.append("字典记录不是对象，已跳过")
-        return None
-    jsid = str(item.get("jsid") or "").strip()
-    jsmc = str(item.get("jsmc") or "").strip()
-    # 缺 jsid 的记录对不上教室身份，缺 jsmc 的没有展示名，都只能跳过。
-    if not jsid or not jsmc:
-        warnings.append("字典记录缺少 jsid 或 jsmc，已跳过: " + (jsid or jsmc or "(空)"))
-        return None
-    record = expand_record(jsid, jsmc)
-    # 展开失败的展示名不能进不上课结果，原文进警告。
-    if not record["expanded"]:
-        warnings.append("教室名无法展开，不进不上课结果: " + jsmc)
-    return record
+    payload, reason = read_roster_json(path if path else ROSTER_PATH)
+    # 文件读不出来时没有可展开的内容，直接给空全集。
+    if reason:
+        return empty_roster(reason)
+    return parse_roster(payload)
+
+
+def roster_cache_fields(roster):
+    """取结果里的 cache.roster 字段：抓取时间、记录数与展开后的单体教室数。"""
+    return {
+        "captured_at": str(roster.get("captured_at") or ""),
+        "record_count": len(roster.get("records") or ()),
+        "room_count": len(dictionary_room_index(roster)),
+    }
 
 
 def cell_text(cell):
@@ -766,7 +825,7 @@ def free_blocks_of_day(occupancy, weekday):
     return free
 
 
-# 反推层：把字典、本学年各学期教室名与本次课表拼成不上课结果，全部是纯函数。
+# 反推层：把内置总表、本学年各学期教室名与本次课表拼成不上课结果，全部是纯函数。
 
 # 结果里的状态取值与面向用户的转述：只说明该时段不上课，不代表可以占用。
 ROOM_STATUS = "no_class"
@@ -775,7 +834,7 @@ ROOM_STATUS_TEXT = "不上课"
 # 成功结果必带的两句说明，count 为 0 时也要带上。
 LIMITATION_TEXT = "这些教室只是该时段不上课，无法获知是否被借用或锁定。"
 BLOCK_NOTE_TEXT = "节次按大节判断：块内小节共用一格，任一小节有排课即视为该大节有课。"
-# 同名多条字典记录的结果带上这句警告：这类教室的 jsid 取不出唯一值。
+# 同名多条总表记录的结果带上这句警告：这类教室的 jsid 取不出唯一值。
 MERGED_ROOM_WARNING = "同名行已合并: "
 
 # 时段划分固定按整天口径，与用户选的大节范围无关。
@@ -803,14 +862,14 @@ def weekday_label(weekday):
     return "星期" + WEEKDAY_NUMERALS[index - 1]
 
 
-def dictionary_room_index(dictionary):
-    """把字典摊平成 单体教室 → 来源信息，返回 {教室名: jsid/source_names/merged}。
+def dictionary_room_index(roster):
+    """把总表记录摊平成 单体教室 → 来源信息，返回 {教室名: jsid/source_names/merged}。
 
-    一间教室可能由多条字典记录展开而来（同名多条），此时 jsid 不再是唯一身份，置空并在结果里
+    一间教室可能由多条总表记录展开而来（同名多条），此时 jsid 不再是唯一身份，置空并在结果里
     记「同名行已合并」警告；展开失败的记录不产生单体教室，它的警告已由解析阶段记下。
     """
     index = {}
-    for record in dictionary.get("records") or ():
+    for record in roster.get("records") or ():
         rooms = record.get("rooms") or ()
         # 展开不出房号的记录不产生单体教室，它只能进警告。
         if not rooms:
@@ -823,7 +882,7 @@ def dictionary_room_index(dictionary):
             if entry is None:
                 index[name] = {"jsid": jsid, "source_names": [jsmc], "merged": False}
                 continue
-            # 再次见到同名教室说明字典里有同名多条记录，jsid 不再是唯一身份。
+            # 再次见到同名教室说明总表里有同名多条记录，jsid 不再是唯一身份。
             entry["jsid"] = ""
             entry["merged"] = True
             # 来源展示名按出现顺序记全，同一个展示名只记一次。
@@ -860,21 +919,45 @@ def has_year_evidence(complete_semesters):
     return False
 
 
-def candidate_rooms(dictionary_rooms, evidence):
+def schedule_room_names(semester_rooms):
+    """取本学年各学期课表首格展开出的单体教室名集合。"""
+    names = set()
+    for rooms in (semester_rooms or {}).values():
+        for name in rooms or ():
+            names.add(str(name))
+    return names
+
+
+def room_universe_index(roster, semester_rooms):
+    """取 教室名 → 来源信息 的索引：总表展开出的教室，加上只在课表首格出现过的教室。
+
+    总表里的教室带 jsid 与来源展示名；只在课表里出现的教室 jsid 为空，来源展示名就是它自己。
+    取并集是因为总表是快照，学校新加的教室会先出现在课表里。
+    """
+    index = dictionary_room_index(roster)
+    for name in schedule_room_names(semester_rooms):
+        # 总表里已经有这间教室时不覆盖它的 jsid 与来源展示名。
+        if name in index:
+            continue
+        index[name] = {"jsid": "", "source_names": [name], "merged": False}
+    return index
+
+
+def candidate_rooms(universe, evidence):
     """候选集：全集里在本学年某个完整学期数据行首格出现过的单体教室。"""
-    # 只留下字典里的教室，课表首格里出现过的其他名字不进结果。
-    return {name for name in dictionary_rooms if name in evidence}
+    # 只留出现在完整学期首格里的教室，其他名字不当候选。
+    return {name for name in universe if name in evidence}
 
 
-def year_round_idle_rooms(dictionary_rooms, candidates):
+def year_round_idle_rooms(universe, candidates):
     """全年无课集：全集里不属于候选集的单体教室，与候选集不相交。"""
-    return {name for name in dictionary_rooms if name not in candidates}
+    return {name for name in universe if name not in candidates}
 
 
 def selected_rooms(candidates, keyword):
     """指定教室集：关键词为空时等于候选集，非空时按规范化展示名做包含匹配。
 
-    只在候选集里筛，不创造字典里不存在的教室；没有命中时返回空集，调用方仍按成功处理。
+    只在候选集里筛，不创造总表与课表首格之外的教室；没有命中时返回空集，调用方仍按成功处理。
     """
     text = normalize_room_name(keyword)
     # 关键词为空时不缩小范围，指定教室集就是候选集。
@@ -942,18 +1025,18 @@ def merged_warnings(*groups):
     warnings = []
     for group in groups:
         for text in group or ():
-            # 同一句警告可能来自字典与课表两处，结果里只留一条。
+            # 同一句警告可能来自总表与课表两处，结果里只留一条。
             if text not in warnings:
                 warnings.append(text)
     return warnings
 
 
 def merged_room_warnings(names, index):
-    """取同名多条字典记录的教室的合并警告：这些教室的 jsid 取不出唯一值。"""
+    """取同名多条总表记录的教室的合并警告：这些教室的 jsid 取不出唯一值。"""
     warnings = []
     for name in sorted(names):
-        # jsid 为空说明这间教室对应多条字典记录，展示名相同但身份不唯一。
-        if index[name]["merged"]:
+        # jsid 为空说明这间教室对应多条总表记录，展示名相同但身份不唯一。
+        # jsid 为空说明这间教室对应多条总表记录，展示名相同但身份不唯一。
             warnings.append(MERGED_ROOM_WARNING + name)
     return warnings
 
@@ -981,7 +1064,7 @@ def empty_room_results(names, index, occupancy_map, weekday):
     return rooms
 
 
-def reverse_room_sets(dictionary, semester_rooms, parsed, params):
+def reverse_room_sets(roster, semester_rooms, parsed, params):
     """反推候选集、指定教室集、占用集与全年无课集，返回 (集合, 失败结果)。
 
     集合含 index、blocks、candidates、year_round_idle、selected、occupied 与 occupancy_map。
@@ -993,7 +1076,7 @@ def reverse_room_sets(dictionary, semester_rooms, parsed, params):
     if not blocks:
         return None, failure("jwxt", "大节范围取不出覆盖块，无法判定占用", PARAM_HINT)
     semester = str(params["semester"])
-    index = dictionary_room_index(dictionary)
+    index = room_universe_index(roster, semester_rooms)
     evidence, complete = semester_evidence_rooms(semester_rooms)
     target_rooms = (semester_rooms or {}).get(semester) or ()
     # 目标学期名单低于完整阈值时停止反推：缺失的行不能被解释成不上课。
@@ -1003,29 +1086,29 @@ def reverse_room_sets(dictionary, semester_rooms, parsed, params):
     # 本学年没有完整秋春时全年无课判断缺少可用数据，同样停止反推。
     if not has_year_evidence(complete):
         return None, failure("jwxt", "本学年没有完整的秋季或春季课表，已停止反推", YEAR_EVIDENCE_HINT)
-    dictionary_rooms = set(index)
-    candidates = candidate_rooms(dictionary_rooms, evidence)
+    universe = set(index)
+    candidates = candidate_rooms(universe, evidence)
     return {
         "index": index,
         "blocks": blocks,
         "candidates": candidates,
-        "year_round_idle": year_round_idle_rooms(dictionary_rooms, candidates),
+        "year_round_idle": year_round_idle_rooms(universe, candidates),
         "selected": selected_rooms(candidates, params["keyword"]),
         "occupied": occupied_rooms(parsed, params["weekday"], blocks),
         "occupancy_map": room_occupancy_map(parsed),
     }, None
 
 
-def empty_classroom_result(dictionary, semester_rooms, parsed, params, cache=None):
+def empty_classroom_result(roster, semester_rooms, parsed, params, cache=None):
     """反推不上课教室并组装完整结果信封。
 
-    dictionary 是 parse_dictionary 的解析结果，semester_rooms 是 学期 → 该学期数据行首格
+    roster 是 load_roster 的结果（沿用既有字典解析的形状），semester_rooms 是 学期 → 该学期
     展开出的教室名列表，parsed 是本次课表的解析结果，params 是 validate_query 通过的参数，
     cache 由调用方（编排）传入，默认空字典。函数不读时钟、不发请求、不读写缓存：结果集由
     指定教室集减去占用集得到，因此这周这天整天没课、不出现在响应里的教室照样进结果。目标
     学期不完整，或本学年没有完整秋春时返回失败结果，且不含 rooms。
     """
-    sets, error = reverse_room_sets(dictionary, semester_rooms, parsed, params)
+    sets, error = reverse_room_sets(roster, semester_rooms, parsed, params)
     # 停止反推的两种情形由 reverse_room_sets 说明，失败结果里没有 rooms。
     if error is not None:
         return error
@@ -1033,7 +1116,7 @@ def empty_classroom_result(dictionary, semester_rooms, parsed, params, cache=Non
     resting = sets["selected"] - sets["occupied"]
     rooms = empty_room_results(resting, sets["index"], sets["occupancy_map"], weekday)
     warnings = merged_warnings(
-        dictionary.get("warnings"),
+        roster.get("warnings"),
         parsed.get("warnings"),
         merged_room_warnings(resting, sets["index"]),
     )
@@ -1047,7 +1130,7 @@ def empty_classroom_result(dictionary, semester_rooms, parsed, params, cache=Non
         "period_end": params["period_end"],
         "blocks": sets["blocks"],
         "keyword": params["keyword"],
-        "skjs": keyword_skjs(params["keyword"], dictionary.get("records") or ()),
+        "skjs": keyword_skjs(params["keyword"], roster.get("records") or ()),
         "limitation": LIMITATION_TEXT,
         "block_note": BLOCK_NOTE_TEXT,
         "excluded_year_round_idle_count": len(sets["year_round_idle"]),
@@ -1075,13 +1158,13 @@ def filter_free_rooms(rooms, switches):
         if all(room.get(name, False) for name in opened):
             kept.append(room)
     return kept
-# 缓存层：只把解析成功的字典与学期教室名写盘，读不出内容时按没有缓存处理。
+# 缓存层：只把解析成功的学期教室名写盘，读不出内容时按没有缓存处理。
 
 
 def cache_dir():
     """取缓存目录；环境变量改的是目录，不是文件名。
 
-    QFNU_CLASSROOM_CACHE_PATH 指定整目录，字典文件与各学期文件都落在该目录；没给环境变量时
+    QFNU_CLASSROOM_CACHE_PATH 指定整目录，各学期的教室名文件都落在该目录；没给环境变量时
     用状态目录下的 classroom-schedule 子目录。
     """
     value = os.environ.get(CACHE_ENV_VAR, "").strip()
@@ -1089,11 +1172,6 @@ def cache_dir():
     if value:
         return expand_path(value)
     return os.path.join(state_dir(), CACHE_DIR_NAME)
-
-
-def dictionary_cache_path():
-    """取字典缓存文件路径：缓存目录下的 dictionary.json。"""
-    return os.path.join(cache_dir(), DICTIONARY_CACHE_NAME)
 
 
 def semester_cache_path(semester):
@@ -1149,7 +1227,7 @@ def cache_expired(fetched_at, now):
 
     纯函数：写入时间与当前时间都由调用方传入，函数内部不读系统时钟，编排与测试都好复用。
     正好满 7 日仍算可用（需求口径是早于 7 日才刷新）；时间戳读不出时按过期处理，调用方会去
-    刷新这份缓存。字典与学期缓存共用它。
+    刷新这份缓存。学期缓存用它判断新鲜度。
     """
     written = parse_timestamp(fetched_at)
     moment = parse_timestamp(now)
@@ -1207,58 +1285,6 @@ def read_cache_file(path):
     if not isinstance(data, dict):
         return None
     return data
-
-
-def write_dictionary_cache(dictionary, fetched_at=None):
-    """把教室字典写入缓存文件，返回写入的内容。
-
-    只写设计约定的字段：fetched_at、max_row、record_count、room_count 与每条记录的 jsid、
-    jsmc、rooms。字典不是一次成功解析的结果（解析失败拿到的 None 等）时直接报错不写：残缺
-    名单不能当全集。文件里不保存 Cookie、encoded、账号密码，也不保存任何单元格内容。
-    """
-    # 解析失败拿到的 None 或其他类型不是字典解析结果，属于调用方式错误。
-    if not isinstance(dictionary, dict):
-        raise TypeError("dictionary cache requires a parsed dictionary")
-    records = dictionary.get("records")
-    # 缺记录列表说明它不是成功解析的结果，残缺名单不允许写盘。
-    if not isinstance(records, list):
-        raise TypeError("dictionary cache requires parsed records")
-    # 一条记录都没有的字典不是全量名单，同样不允许写盘。
-    if not records:
-        raise ValueError("dictionary cache requires at least one record")
-    cached_records = []
-    room_count = 0
-    for record in records:
-        rooms = list(record.get("rooms") or ())
-        room_count += len(rooms)
-        cached_records.append(
-            {
-                "jsid": str(record.get("jsid") or ""),
-                "jsmc": str(record.get("jsmc") or ""),
-                "rooms": rooms,
-            }
-        )
-    payload = {
-        "fetched_at": timestamp_text(fetched_at if fetched_at is not None else now_moment()),
-        "max_row": dictionary.get("max_row"),
-        "record_count": len(cached_records),
-        "room_count": room_count,
-        "records": cached_records,
-    }
-    write_cache_file(dictionary_cache_path(), payload)
-    return payload
-
-
-def read_dictionary_cache():
-    """读字典缓存，返回缓存内容；缺失、损坏或字段不全时返回 None。"""
-    payload = read_cache_file(dictionary_cache_path())
-    # 没有缓存文件时就是没有可用字典。
-    if payload is None:
-        return None
-    # records 不是数组说明缓存字段不全，不能拿它当教室全集。
-    if not isinstance(payload.get("records"), list):
-        return None
-    return payload
 
 
 def write_semester_cache(semester, kbjcmsid, parsed, fetched_at=None):
@@ -1321,13 +1347,13 @@ def write_semester_cache_from_page(semester, kbjcmsid, raw, fetched_at=None):
     return write_semester_cache(semester, kbjcmsid, parsed, fetched_at), None
 
 
-# 请求层：只发学生端教室课表的三条只读请求，正文残缺时最多再请求两次。
+# 请求层：只发学生端教室课表的两个只读请求，传输被掐断时最多再重发两次。
 
 
 def page_headers(referer):
     """父页 GET 的请求头：Referer 指向教务侧栏，UA 用教室接口的桌面版标识。
 
-    这三条请求只复用现有会话的 Cookie，不改 jwxt_client 的全局 USER_AGENT。
+    这两个请求只复用现有会话的 Cookie，不改 jwxt_client 的全局 USER_AGENT。
     """
     return {"Referer": referer, "User-Agent": CLASSROOM_USER_AGENT}
 
@@ -1360,111 +1386,62 @@ def send_request(client, method, url, form, referer):
     return raw, ""
 
 
-def content_truncated(raw, expected_title=""):
-    """判断一份没通过解析的正文是不是「没传完」，值得再请求一次。
-
-    登录页、会话互踢、非法访问、查询节次出错这几类页面都能完整取到，重试只会拿到同一份。
-    """
-    # 会话与页面类失败都是完整页面，重试不会变好。
-    if page_failure(raw) is not None:
-        return False
-    # 该学期没配节次是教务侧状态，重试也是一样的页面。
-    if PERIOD_ERROR_TEXT in raw:
-        return False
-    # 父页有固定标题：标题缺失或不是它，通常是正文被掐断了。
-    if expected_title:
-        return page_failure(raw, expected_title) is not None
-    # 课表页不看标题，解析没通过只剩结构不符一种可能，按没传完处理。
-    return True
-
-
 def retry_failure(error, attempts):
     """把最后一次失败的说明补上请求次数，让用户知道已经重发过。"""
     message = str(error.get("error") or "") + "；已请求 " + str(attempts) + " 次"
     return failure("jwxt", message, str(error.get("hint") or ""))
 
 
-def request_with_retry(client, method, url, form, referer, accept, accept_args=()):
+def incomplete_grid_body(raw):
+    """判断一份没通过解析的网格正文是不是「正文不完整」，值得丢弃这次正文重发。
+
+    完整错误页——登录页、非法访问、会话互踢、查询节次出错——都能完整取到，重发只会拿到同一份；
+    其余情况都没形成可用课表（缺闭合的 table#kbtable、表头不符、格数不是 35、一行首格都取不出
+    教室名），按正文不完整处理：调用方丢弃这份正文重发，最多再请求 2 次。
+    """
+    # 命中错误标记的正文是完整页面，重发拿不到别的东西。
+    if page_failure(raw) is not None:
+        return False
+    # 该学期没配节次是教务侧状态，重发也是一样的页面；其余情况都没形成可用课表。
+    return PERIOD_ERROR_TEXT not in raw
+
+
+def incomplete_failure(error, attempts):
+    """正文连续不完整时的失败结果：口径是响应不完整，不说成接口契约变了。"""
+    reason = str(error.get("error") or "")
+    message = INCOMPLETE_TEXT + ": " + reason + "；已请求 " + str(attempts) + " 次"
+    return failure("jwxt", message, INCOMPLETE_HINT)
+
+
+def request_with_retry(client, method, url, form, referer, parse, parse_args=(), incomplete=None):
     """按次数上限请求一条只读接口，返回 (取值, 失败结果)。
 
-    accept 接收正文与 accept_args，返回 (取值, 失败结果, 是否值得重试)：取值非 None 表示这次
-    正文可用。传输被掐断或正文残缺时丢弃这次正文再请求，最多请求 FETCH_ATTEMPTS 次；会话失效、
-    名单被上限截断这类结论重试也一样，拿到就停。
+    parse 接收正文与 parse_args，返回 (取值, 失败结果)：取值非 None 表示这次正文可用。重发只发生在
+    两类情况：传输被掐断或状态不是 200；incomplete 判定这份正文没形成可用课表（正文不完整）。完整
+    错误页由 incomplete 返回 False 表达，一次即停；父页不传 incomplete，标题不符同样一次即停。
     """
     error = None
+    body_incomplete = False
     for _attempt in range(FETCH_ATTEMPTS):
         raw, transport = send_request(client, method, url, form, referer)
-        # 传输被掐断时没有可判定的正文，直接按这次失败重试。
+        # 传输被掐断时没有可判定的正文，按这次失败重发。
         if transport:
             error = failure("jwxt", transport, TRANSPORT_HINT)
+            body_incomplete = False
             continue
-        value, error, retryable = accept(raw, *accept_args)
-        # 正文可用时立刻返回，不再重试。
+        value, error = parse(raw, *parse_args)
+        # 正文可用时立刻返回，不再重发。
         if value is not None:
             return value, None
-        # 完整页面或服务端给出的结论重试也不会变，立刻停下。
-        if not retryable:
+        # 完整错误页（登录页、非法访问、会话互踢、节次出错）与父页标题不符都一次即停。
+        if incomplete is None or not incomplete(raw):
             return None, error
+        # 正文不完整：丢掉这次正文重发，次数用完时按响应不完整报错。
+        body_incomplete = True
+    # 次数用完：正文一直不完整与传输一直被掐断按各自口径说明。
+    if body_incomplete:
+        return None, incomplete_failure(error, FETCH_ATTEMPTS)
     return None, retry_failure(error, FETCH_ATTEMPTS)
-
-
-def accept_parent_page(raw):
-    """判定父页正文：可用时给出页面信息，标题不符等结构问题时按残缺重试。"""
-    page, error = parse_classroom_page(raw)
-    # 解析通过时这次响应可用，不必再看别的。
-    if error is None:
-        return page, None, False
-    return None, error, content_truncated(raw, CLASSROOM_TITLE)
-
-
-def not_parseable_json(raw):
-    """判断正文是不是读不成 JSON：这类失败可能只是正文没传完，值得重试。"""
-    try:
-        json.loads(raw)
-    except (TypeError, ValueError):
-        return True
-    return False
-
-
-def accept_dictionary(raw):
-    """判定字典正文：可用时给出字典，JSON 读不动时按残缺重试。
-
-    list 长度等于 maxRow、或 result 不是 true，都是服务端给出的结论，重试只会拿到同一份。
-    """
-    dictionary, error = parse_dictionary(raw, DICTIONARY_MAX_ROW)
-    # 解析通过时这份名单可用。
-    if error is None:
-        return dictionary, None, False
-    return None, error, not_parseable_json(raw)
-
-
-def accept_semester_page(raw, semester, kbjcmsid):
-    """判定学期课表正文：可用时把教室名写入缓存，结构不符时按残缺重试。
-
-    缓存只在解析通过时落盘：残缺 HTML、登录页、格数不是 35 都不写。
-    """
-    payload, error = write_semester_cache_from_page(semester, kbjcmsid, raw)
-    # 解析通过时教室名已经落盘，返回值就是缓存内容。
-    if error is None:
-        return payload, None, False
-    return None, error, content_truncated(raw)
-
-
-def accept_query_page(raw):
-    """判定本次查询的课表正文：只解析不写缓存，结构不符时按残缺重试。
-
-    带周次与星期的课表是按时间过滤过的行，写进学期缓存会被当成该学期的全部教室名单。
-    """
-    parsed, error = parse_classroom_table(raw)
-    # 解析通过时给出逐行占用位，调用方后面按所选大节判定。
-    if error is None:
-        return parsed, None, False
-    return None, error, content_truncated(raw)
-
-
-def dictionary_form():
-    """教室字典 POST 的表单：skjs 留空取全部教室，maxRow 固定为实测够用的上限。"""
-    return {"skjs": "", "maxRow": str(DICTIONARY_MAX_ROW)}
 
 
 def semester_form(semester, kbjcmsid):
@@ -1507,15 +1484,15 @@ def query_form(semester, kbjcmsid, week_start, week_end, weekday, skjs=""):
 def keyword_skjs(keyword, records):
     """取本次课表 POST 要传的 skjs：只有精确教室名才传，楼名等包含匹配传空串。
 
-    关键词与某条未展开 jsmc 规范化后完全相同时，传该条未展开的原名；部分关键词直接发给
-    服务端的行为没有实测过，所以关键词只在本地按展示名过滤。
+    关键词与内置总表里某条未展开 jsmc 规范化后完全相同时，传该条未展开的原名；部分关键词直接
+    发给服务端的行为没有实测过，所以关键词只在本地按展示名过滤。
     """
     text = normalize_room_name(keyword)
     # 空关键词不缩小范围，skjs 留空。
     if not text:
         return ""
     for record in records or ():
-        # 非字典记录取不出 jsmc，跳过。
+        # 非总表记录取不出 jsmc，跳过。
         if not isinstance(record, dict):
             continue
         original = str(record.get("jsmc") or "")
@@ -1575,14 +1552,17 @@ def reset_serial_refresh():
 
 
 def request_parent_page(client):
-    """真正读父页的那一次：GET 父页，Referer 用教务侧栏入口。"""
+    """真正读父页的那一次：GET 父页，Referer 用教务侧栏入口。
+
+    父页只有十几 KB，标题不符的语义是「页面未被识别」，不按正文不完整重发，因此不传 incomplete。
+    """
     return request_with_retry(
         client,
         "GET",
         CLASSROOM_PAGE_URL,
         None,
         MAIN_URL,
-        accept_parent_page,
+        parse_classroom_page,
     )
 
 
@@ -1595,37 +1575,29 @@ def fetch_parent_page(client):
     return serial_refresh(CLASSROOM_PAGE_RESOURCE, request_parent_page, client)
 
 
-def request_dictionary(client):
-    """真正拉字典的那一次：POST 表单只有 skjs 与 maxRow，Referer 是父页。"""
-    return request_with_retry(
-        client,
-        "POST",
-        CLASSROOM_DICTIONARY_URL,
-        dictionary_form(),
-        CLASSROOM_REFERER,
-        accept_dictionary,
-    )
+def parse_semester_page(raw, semester, kbjcmsid):
+    """判定学期课表正文并写缓存，返回 (缓存内容, 失败结果)。
 
-
-def fetch_dictionary(client):
-    """拉一次教室字典，返回 (字典, 失败结果)。
-
-    名单被上限截断或 result 不是 true 时返回失败结果，由调用方决定能不能继续用旧字典；
-    同一个进程里只拉一次。
+    只有一个功能：把正文放在第一个参数上，好让 request_with_retry 用统一的
+    「(正文, 其余参数)」调用约定；正文不可用时整份弃用，不落盘。
     """
-    return serial_refresh(CLASSROOM_DICTIONARY_RESOURCE, request_dictionary, client)
+    return write_semester_cache_from_page(semester, kbjcmsid, raw)
 
 
 def request_semester_page(client, semester, kbjcmsid):
-    """真正拉学期课表的那一次：时间参数全空，正文通过完整性校验时才写缓存。"""
+    """真正拉学期课表的那一次：时间参数全空，正文通过完整性校验时才写缓存。
+
+    网格 POST 按「正文不完整就重发」处理；错误页仍一次即停。
+    """
     return request_with_retry(
         client,
         "POST",
         CLASSROOM_IFR_URL,
         semester_form(semester, kbjcmsid),
         CLASSROOM_REFERER,
-        accept_semester_page,
+        parse_semester_page,
         (semester, kbjcmsid),
+        incomplete=incomplete_grid_body,
     )
 
 
@@ -1650,7 +1622,8 @@ def fetch_query_page(client, semester, kbjcmsid, week_start, week_end, weekday, 
         CLASSROOM_IFR_URL,
         form,
         CLASSROOM_REFERER,
-        accept_query_page,
+        parse_classroom_table,
+        incomplete=incomplete_grid_body,
     )
 
 
@@ -1665,18 +1638,6 @@ SEMESTER_CACHE_HINT = "请稍后重试；本学年学期教室名单不完整时
 SEMESTER_FROM_CACHE = "cache"
 SEMESTER_REFRESHED = "refreshed"
 SEMESTER_STALE = "stale"
-
-
-def dictionary_records(dictionary):
-    """取字典里的记录列表；字典不是对象或缺 records 时返回空列表。
-
-    空列表等于没有教室全集，调用方按没有可用字典处理，不会拿它反推。
-    """
-    records = dictionary.get("records") if isinstance(dictionary, dict) else None
-    # records 不是数组时取不出任何教室，按空名单处理。
-    if not isinstance(records, list):
-        return []
-    return records
 
 
 def cache_usable(payload, now):
@@ -1714,33 +1675,6 @@ def query_plan(page, params):
         message = "目标学期不属于本学年或不在父页下拉中，无法使用该学期: semester=" + picked
         return None, warnings, failure("jwxt", message, TARGET_SEMESTER_HINT)
     return semesters, warnings, None
-
-
-def collect_dictionary(client, now):
-    """取本次查询要用的字典，返回 (字典, 是否降级用旧字典, 失败结果)。
-
-    缓存缺失或早于 7 日时刷新：刷新成功就写盘并用这份新名单。刷新失败（含 list 长度等于 maxRow
-    被截断、result 不是 true）时不使用该次响应，再看一眼缓存：未过期的旧字典可以继续用并标记
-    stale_dictionary，没有可用字典则停止反推。
-    """
-    cached = read_dictionary_cache()
-    # 缓存还在 7 日内且名单非空时直接用，不必再发字典请求。
-    if cache_usable(cached, now) and dictionary_records(cached):
-        return cached, False, None
-    fresh, error = fetch_dictionary(client)
-    # 刷新成功且拿到记录时写盘并返回：这份名单就是本次查询的教室全集。
-    if error is None and dictionary_records(fresh):
-        write_dictionary_cache(fresh, now)
-        return fresh, False, None
-    # 刷新失败后重新读一次缓存文件：这期间别的进程可能已经刷新好字典。
-    again = read_dictionary_cache()
-    # 未过期的旧字典仍能说明哪些教室存在，可以继续用，但要标记这次没刷新成功。
-    if cache_usable(again, now) and dictionary_records(again):
-        return again, True, None
-    # 解析成功但名单为空说明服务端没给出教室，同样没有可用的历史字典。
-    if error is None:
-        error = failure("jwxt", "教室字典名单为空", DICTIONARY_HINT)
-    return None, False, error
 
 
 def semester_rooms_for(client, semester, kbjcmsid, now):
@@ -1797,13 +1731,13 @@ def collect_year_rooms(client, semesters, kbjcmsid, now):
     return rooms_by_semester, refreshed, stale, None
 
 
-def query_page_of(client, params, dictionary, kbjcmsid):
+def query_page_of(client, params, roster, kbjcmsid):
     """发本次查询的课表 POST，返回 (解析结果, 失败结果)。
 
-    关键词与某条未展开 jsmc 完全相同时把 skjs 设为该原名，其余情况留空只在本地按展示名过滤。
-    周次与星期写进表单、节次留空以取整天 35 格；这份带时间参数的正文不写学期缓存。
+    关键词与某条内置总表未展开 jsmc 完全相同时把 skjs 设为该原名，其余情况留空只在本地按展示名
+    过滤。周次与星期写进表单、节次留空以取整天 35 格；这份带时间参数的正文不写学期缓存。
     """
-    skjs = keyword_skjs(params["keyword"], dictionary.get("records") or ())
+    skjs = keyword_skjs(params["keyword"], roster.get("records") or ())
     return fetch_query_page(
         client,
         params["semester"],
@@ -1831,9 +1765,10 @@ def query_empty_classrooms(
 
     client 是已登录的只读会话（有 text 方法即可），后 7 个参数对应 CLI 的 --semester、--week、
     --week-end、--weekday、--period-start、--period-end 与 --keyword。调用顺序固定：清掉本进程
-    上一次等到的刷新结果 → 校验参数 → 读父页 → 定本学年学期 → 刷新字典 → 补齐本学年学期缓存 →
-    发一次带周次与星期的课表（jc 留空）→ 反推求差。参数无效时一个上游请求都不发；失败结果沿用
-    ok=false、error 与 hint 且不含 rooms，成功结果的 cache 字段说明本次用了哪些学期。
+    上一次等到的刷新结果 → 校验参数 → 读父页 → 载入内置教室总表（本地文件，不发请求）→ 补齐本
+    学年学期缓存 → 发一次带周次与星期的课表（jc 留空）→ 反推求差。参数无效时一个上游请求都不发；
+    失败结果沿用 ok=false、error 与 hint 且不含 rooms，成功结果的 cache 字段说明本次用了哪些学期
+    与总表快照的口径。
     """
     # 本次查询自己去刷新资源，不复用本进程上一次查询等到的结果。
     reset_serial_refresh()
@@ -1852,17 +1787,15 @@ def query_empty_classrooms(
     # 目标学期不在该学年下拉里时停下，一个上游请求都不发。
     if error is not None:
         return error
-    dictionary, stale_dictionary, error = collect_dictionary(client, now)
-    # 没有可用字典时停止反推：没有教室全集就判不出哪些教室不上课。
-    if error is not None:
-        return error
+    # 内置总表是仓库里的数据文件：读它不发请求，读不出来只退化成课表首格全集。
+    roster = load_roster()
     rooms_by_semester, refreshed, stale, error = collect_year_rooms(
         client, semesters, page["kbjcmsid"], now
     )
     # 会话中途失效或某个学期没有可用缓存时停下：全年无课名单不完整。
     if error is not None:
         return error
-    parsed, error = query_page_of(client, params, dictionary, page["kbjcmsid"])
+    parsed, error = query_page_of(client, params, roster, page["kbjcmsid"])
     # 课表不可用（登录页、互踢、缺表、格数不是 35、节次出错）时失败结果里不含 rooms。
     if error is not None:
         return error
@@ -1870,7 +1803,7 @@ def query_empty_classrooms(
         "semesters": semesters,
         "refreshed_semesters": refreshed,
         "stale_semesters": stale,
-        "stale_dictionary": stale_dictionary,
+        "roster": roster_cache_fields(roster),
     }
-    result = empty_classroom_result(dictionary, rooms_by_semester, parsed, params, cache)
+    result = empty_classroom_result(roster, rooms_by_semester, parsed, params, cache)
     return with_plan_warnings(result, warnings)

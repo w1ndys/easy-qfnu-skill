@@ -139,3 +139,23 @@
 
 - [x] 13. 检查点 - 确保所有测试通过
   - 确保所有测试通过,如有疑问请询问用户
+
+- [x] 14. 返工：内置教室总表取代运行时字典
+  - **背景**：2026-10-08 实测起，`POST /jsxsd/kbcx/queryJs2` 不论入参、方法、请求头、Referer 或前置访问顺序，一律返回 730 字节「非法访问」错误页；同模块 `getJxlByAjax` 仍正常，父页 HTML 里也仍写着这个 `serviceUrl`，说明服务端不再提供该端点。同一天 15:14 抓到的 2452 条结果可用，因此改为随仓库分发一份总表快照，运行时不再请求它。本任务**取代**任务 5「解析 `queryJs2` JSON」、任务 6「字典缓存」、任务 8「字典 POST」与任务 11「刷新字典/降级」中与字典相关的条目；设计与需求已按此更新（设计「内置教室总表」、需求 2）。
+  - 新增数据文件 `python/qfnu/classroom-roster.json`，结构 `{"source", "captured_at", "max_row", "count", "rooms": [[jsid, jsmc], ...]}`，`rooms` 一条记录一行便于 diff。数据取 2026-10-08 15:14 的成功抓取结果（2452 条，`max_row=5000`，未被截断）；`source` 写 `/jsxsd/kbcx/queryJs2`，`captured_at` 写抓取时间。文件里不得出现姓名、学号等个人信息。
+  - 在 `python/qfnu/jwxt_classroom.py` 实现纯函数加载总表：读该文件并展开成与既有字典解析一致的形状（`{"max_row", "records": [{jsid, jsmc, rooms, source_jsid, expanded}], "warnings"}`），让下游（关键词精确匹配、反推、结果组装）零改动复用。文件缺失、JSON 不合法或结构不符时返回空记录集并记警告，不抛异常。
+  - 删掉运行时字典路径：`CLASSROOM_DICTIONARY_URL` 的请求、`dictionary_form`、`request_dictionary`、`fetch_dictionary`、`accept_dictionary`、`collect_dictionary`、`dictionary_cache_path`、`write_dictionary_cache`、`read_dictionary_cache`、`DICTIONARY_MAX_ROW`、`not_parseable_json`，以及编排里的字典刷新与 `cache.stale_dictionary`。确无其他调用方的解析函数也一并删除，不留死代码。
+  - 全集改为「内置总表展开后的单体教室」∪「本学年各学期课表首格展开出的单体教室」；只在课表里出现的教室 `jsid` 为空。`excluded_year_round_idle_count` 按这个新全集算（不随关键词改变）。
+  - `cache` 去掉 `stale_dictionary`，新增 `roster`：`{"captured_at", "record_count", "room_count"}`；总表不可用时在 `warnings` 说明 `jsid` 与全年无课计数不可用。
+  - 完整 HTML 错误页一律判为不可重试、一次即停，文案指向「接口路径或入参可能已变化」，不得再落到「不是合法 JSON」；只有传输被掐断才重试（最多 3 次）。对应需求 2.7。
+  - 约束同任务 1。数据文件只含教室名，属公开信息。
+  - [x] 14.1 为内置总表加载编写单元测试
+    - 覆盖正常往返（`jsid` 与 `jsmc` 逐条对齐）、文件缺失、JSON 不合法、结构不符、合称记录 `source_jsid` 不拆分、展开失败的名称进 `warnings`。用临时目录，不读仓库外文件。对应需求 2.1、2.2。
+  - [x] 14.2 更新受影响的既有用例
+    - 删掉断言「会请求字典」与字典缓存的用例，改为断言**不请求** `queryJs2`、且 `cache` 里不再有 `stale_dictionary`、有 `roster`。
+  - [x] 14.3 为错误页不可重试与并集口径编写测试
+    - 断言「非法访问」错误页只请求一次、失败信息指向接口契约变化；断言只在课表里出现的教室进入结果且 `jsid` 为空、且它参与候选集。
+  - [x] 14.4 跑全量回归与 ruff
+    - `cd python && python3 -m unittest discover -s tests` 全绿；仓库根 `ruff check .` 通过。
+  - [x] 14.5 用真实样本复跑验收
+    - 用真实会话与真实响应跑一次 `jwxt classrooms`，确认 `ok: true`、`rooms` 完整、调用链里不再有 `queryJs2` 请求。
