@@ -2,8 +2,7 @@
 
 ## 仓库定位
 
-- 当前仓库 / 产品主线：`easy-qfnu-skill`
-- 工程主仓库：`easy-qfnu-cli`
+- 当前仓库 / 产品主线：`easy-qfnu-skill`（同时承载 CLI 实现与公开使用说明）
 - 下游服务仓库：`easy-qfnu-hub`
 - 独立预选课中转仓库：`easy-qfnu-precourse`
 - 独立选课推荐仓库：`easy-qfnu-recommendation`
@@ -12,9 +11,9 @@
 - 独立空教室仓库：`easy-qfnu-kjs`
 - 校园指南仓库：`easy-qfnu-guide`
 
-`easy-qfnu-cli` 是跨仓库工程协调入口。各仓库分别开发、分别提交。
+各仓库分别开发、分别提交；CLI、固定域名 relay 与匿名统计客户端都在本仓库维护。
 
-已归档、不再作为当前主线：`easy-qfnu-course-recommendations`（旧推荐审核后台，由 `easy-qfnu-recommendation` 替代）。
+已归档、不再作为当前主线：`easy-qfnu-course-recommendations`（旧推荐审核后台，由 `easy-qfnu-recommendation` 替代）、`easy-qfnu-cli`（CLI 实现已并入本仓库）。
 
 ## 各仓库职责
 
@@ -22,19 +21,14 @@
 
 - 定义用户能力、Agent 流程和公开使用说明；
 - 维护产品需求和公开版本文档；
-- 不在公开 README、SKILL.md 或 Release 文案中暴露 CLI、Hub、内部域名、部署结构或维护流程。
-
-### easy-qfnu-cli
-
-- 实现本地教务登录、会话、成绩、课表等能力；
-- 实现固定域名 relay 和匿名统计客户端；
-- 维护客户端 API 消费契约与兼容版本；公开 Release 由 `easy-qfnu-skill` 发布；
-- 负责协调 Hub 与 Skill 的工程变更。
+- 实现 CLI（本地教务登录、会话、成绩、课表等能力）、固定域名 relay 与匿名统计客户端；
+- 维护客户端 API 消费契约与兼容版本，公开 Release 由本仓库发布；
+- 不在公开 README、SKILL.md 或 Release 文案中暴露内部域名、部署结构或维护流程。
 
 ### easy-qfnu-hub
 
 - 实现反馈、推荐提交、匿名使用统计和 Dashboard 等云端服务；
-- 遵循 Skill 已确定的产品行为和 CLI 已确认的客户端契约；
+- 遵循 Skill 已确定的产品行为与客户端契约；
 - 不独立改变产品语义，不把 Hub 内部凭据、日志或数据边界暴露给客户端；
 - 不直接修改推荐仓库或排名快照仓库。
 
@@ -81,13 +75,13 @@
 ## 变更流程
 
 1. 在 `easy-qfnu-skill` 的需求或 issue 中确定用户可见的产品行为；
-2. 在 `easy-qfnu-cli` 中拆分工程任务，冻结客户端接口、统计事件和兼容要求；
+2. 在同一仓库中拆分工程任务，冻结客户端接口、统计事件和兼容要求；
 3. 在对应的独立服务仓库实现只读接口 / 网页 / 快照（precourse、recommendation、ranking、freshman-exam、kjs、guide）；
 4. 在 `easy-qfnu-hub` 中实现匿名使用统计契约（以及推荐提交中继，如涉及）；
-5. 在 `easy-qfnu-cli` 中接入并完成客户端验证；
+5. 在 `easy-qfnu-skill` 中接入并完成客户端验证；
 6. 在 `easy-qfnu-skill` 中只同步经过脱敏的公开使用说明。
 
-API 变更顺序：外部只读接口与中转契约 → Hub 统计 / 提交契约 → CLI 客户端 → Skill 公开文档。
+API 变更顺序：外部只读接口与中转契约 → Hub 统计 / 提交契约 → 客户端 → 公开文档。
 
 ## 提交与发布
 
@@ -103,6 +97,6 @@ API 变更顺序：外部只读接口与中转契约 → Hub 统计 / 提交契�
 easy-qfnu-precourse 网页查询
 → 独立只读服务稳定
 → Hub
-→ CLI
-→ Skill 公开说明
+→ CLI 实现（本仓库）
+→ 公开使用说明同步
 ```
