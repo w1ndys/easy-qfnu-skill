@@ -1,14 +1,24 @@
 import json
+import os
 import random
+import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 from qfnu.jwxt_classroom import (
     BLOCK_START_BOUNDS,
+    CACHE_DIR_NAME,
+    CACHE_ENV_VAR,
+    CACHE_TIMEZONE,
+    CACHE_TTL_DAYS,
     GRID_BLOCK_NAMES,
     GRID_CELL_COUNT,
     PERIOD_BLOCKS,
     any_occupied,
     block_bounds_error,
+    cache_dir,
+    cache_expired,
+    dictionary_cache_path,
     expand_record,
     expand_room_name,
     free_blocks_of_day,
@@ -19,11 +29,19 @@ from qfnu.jwxt_classroom import (
     parse_dictionary,
     parse_semester,
     query_blocks,
+    read_dictionary_cache,
+    read_semester_cache,
     room_occupancy_map,
     row_occupancy,
+    semester_cache_path,
+    semester_complete,
     validate_query,
+    write_dictionary_cache,
+    write_semester_cache,
+    write_semester_cache_from_page,
     year_semester_list,
 )
+from qfnu.jwxt_client import state_dir
 
 # 父页学期下拉的固定样本：含别的学年、未来学年与格式不符的项。
 SEMESTER_OPTIONS = (
@@ -959,6 +977,369 @@ class ClassroomFailurePageTest(unittest.TestCase):
     def test_page_without_any_room_name_is_unusable(self):
         """没有一行首格能取出教室名时不可用，不能当成「都不上课」。"""
         self.assert_unusable(classroom_table([data_row("演播厅", {0})]), "教室名")
+
+
+# 缓存用例写文件时用的固定时刻，断言文件里的时间戳就按它落。
+CACHE_WRITTEN_AT = datetime(2026, 10, 8, 9, 30, tzinfo=CACHE_TIMEZONE)
+
+# 上面那个时刻写出的时间戳文本，格式与设计 Data Models 一致。
+CACHE_WRITTEN_TEXT = "2026-10-08T09:30:00+08:00"
+
+
+class ClassroomCacheTestCase(unittest.TestCase):
+    """缓存用例的共同部分：把缓存目录指到临时目录，收尾时恢复环境变量。"""
+
+    def setUp(self):
+        """把缓存目录指向临时目录，绝不写真实的 ~/.local/state。"""
+        self.original_cache_env = os.environ.get(CACHE_ENV_VAR)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cache_root = os.path.join(self.temp.name, "classroom-cache")
+        os.environ[CACHE_ENV_VAR] = self.cache_root
+        self.addCleanup(self.restore_cache_env)
+        # 缓存目录此刻必须已经指向临时目录，后面的写入才落不到真实状态目录。
+        self.assertEqual(cache_dir(), self.cache_root)
+
+    def restore_cache_env(self):
+        """恢复环境变量，避免影响其他用例。"""
+        # 原来没有这个变量时删掉，避免后续用例读到临时目录。
+        if self.original_cache_env is None:
+            os.environ.pop(CACHE_ENV_VAR, None)
+        else:
+            os.environ[CACHE_ENV_VAR] = self.original_cache_env
+
+    def read_file(self, path):
+        """读缓存文件原文，用来断言文件里没有不该出现的东西。"""
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def parsed_table(self, rows):
+        """把 (教室名, 占用下标) 列表拼成课表并解析，返回解析结果。"""
+        table = classroom_table([data_row(name, occupied) for name, occupied in rows])
+        parsed, error = parse_classroom_table(table)
+        self.assertIsNone(error)
+        return parsed
+
+    def dictionary_of(self, items):
+        """把字典记录拼成 queryJs2 响应并解析，返回字典。"""
+        dictionary, error = parse_dictionary(json.dumps({"result": True, "list": items}), DICTIONARY_MAX_ROW)
+        self.assertIsNone(error)
+        return dictionary
+
+
+class ClassroomCacheRoundTripTest(ClassroomCacheTestCase):
+    """任务 6.1 / 需求 6.6：写入后再读 jsid 与教室名一致，文件里没有 Cookie 与单元格内容。"""
+
+    def test_cache_env_var_moves_the_directory(self):
+        """QFNU_CLASSROOM_CACHE_PATH 改的是目录：两个文件名仍由本模块决定。"""
+        self.assertEqual(dictionary_cache_path(), os.path.join(self.cache_root, "dictionary.json"))
+        self.assertEqual(
+            semester_cache_path(SELECTED_SEMESTER),
+            os.path.join(self.cache_root, SELECTED_SEMESTER + ".json"),
+        )
+
+    def test_default_cache_directory_sits_under_the_state_dir(self):
+        """没给环境变量时缓存目录是状态目录下的 classroom-schedule。"""
+        os.environ.pop(CACHE_ENV_VAR, None)
+        self.assertEqual(cache_dir(), os.path.join(state_dir(), CACHE_DIR_NAME))
+
+    def test_dictionary_round_trip_keeps_jsid_and_room_names(self):
+        """写入后再读，每条记录的 jsid、jsmc 与展开出的教室名一致。"""
+        items = [
+            {"jsid": "DB3511C3DF574E3A8F75F7611C5EAE3B", "jsmc": "格物楼B101"},
+            {"jsid": "JSID-2", "jsmc": "数学楼401、403"},
+        ]
+        written = write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
+        read_back = read_dictionary_cache()
+        self.assertEqual(read_back, written)
+        self.assertEqual(sorted(read_back), ["fetched_at", "max_row", "record_count", "records", "room_count"])
+        self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
+        self.assertEqual(read_back["max_row"], DICTIONARY_MAX_ROW)
+        self.assertEqual(read_back["record_count"], 2)
+        self.assertEqual(read_back["room_count"], 3)
+        self.assertEqual(
+            [record["jsid"] for record in read_back["records"]],
+            ["DB3511C3DF574E3A8F75F7611C5EAE3B", "JSID-2"],
+        )
+        self.assertEqual(
+            [record["jsmc"] for record in read_back["records"]],
+            ["格物楼B101", "数学楼401、403"],
+        )
+        self.assertEqual(
+            [record["rooms"] for record in read_back["records"]],
+            [["格物楼B101"], ["数学楼401", "数学楼403"]],
+        )
+        self.assertEqual(sorted(read_back["records"][0]), ["jsid", "jsmc", "rooms"])
+
+    def test_dictionary_cache_file_keeps_no_cookie_and_no_cell_content(self):
+        """字典缓存文件里没有 Cookie、encoded、账号密码，也没有单元格内容。"""
+        items = [
+            {
+                "jsid": "JSID-1",
+                "jsmc": "格物楼B101",
+                "cookie": "JSESSIONID=SECRET",
+                "encoded": "SECRET",
+                "password": "SECRET",
+            },
+            {"jsid": "JSID-2", "jsmc": "数学楼401、403", "kbcontent": "课程甲"},
+        ]
+        write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
+        body = self.read_file(dictionary_cache_path())
+        for forbidden in ("JSESSIONID", "SECRET", "cookie", "Cookie", "encoded", "password", "kbcontent", "课程甲", "<td", "nobr"):
+            self.assertNotIn(forbidden, body)
+        # 文件确实写在这份缓存目录里，否则上面的断言会因读错文件而假通过。
+        self.assertIn("JSID-1", body)
+
+    def test_semester_round_trip_keeps_only_room_names(self):
+        """学期缓存只存教室名，行数与教室数按首格展开后的结果落。"""
+        parsed = self.parsed_table([("数学楼401、403", {0}), ("格物楼B101", set())])
+        written = write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, parsed, CACHE_WRITTEN_AT)
+        read_back = read_semester_cache(SELECTED_SEMESTER)
+        self.assertEqual(read_back, written)
+        self.assertEqual(
+            sorted(read_back),
+            ["complete", "fetched_at", "kbjcmsid", "room_count", "rooms", "semester", "source_row_count"],
+        )
+        self.assertEqual(read_back["semester"], SELECTED_SEMESTER)
+        self.assertEqual(read_back["kbjcmsid"], PARENT_MODE_ID)
+        self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
+        self.assertEqual(read_back["source_row_count"], 2)
+        self.assertEqual(read_back["room_count"], 3)
+        # 合称行展开成两间单体教室，室名按展示名排序。
+        self.assertEqual(read_back["rooms"], ["数学楼401", "数学楼403", "格物楼B101"])
+        self.assertFalse(read_back["complete"])
+        self.assertTrue(os.path.exists(os.path.join(self.cache_root, SELECTED_SEMESTER + ".json")))
+
+    def test_semester_cache_file_keeps_no_cell_content(self):
+        """学期缓存文件只含教室名，不含任何单元格内容。"""
+        table = classroom_table([data_row("格物楼B101", {0}, text="课程甲教师乙")])
+        payload, error = write_semester_cache_from_page(SELECTED_SEMESTER, PARENT_MODE_ID, table, CACHE_WRITTEN_AT)
+        self.assertIsNone(error)
+        self.assertIsNotNone(payload)
+        body = self.read_file(semester_cache_path(SELECTED_SEMESTER))
+        for forbidden in ("课程甲", "教师乙", "kbcontent", "nobr", "<td", "cookie", "Cookie", "encoded"):
+            self.assertNotIn(forbidden, body)
+        # 文件确实读对了：教室名与学期都在里面。
+        self.assertIn("格物楼B101", body)
+        self.assertIn(SELECTED_SEMESTER, body)
+
+    def test_cache_missing_or_corrupt_reads_as_none(self):
+        """缓存缺失、写坏、字段不全或学期对不上时都按没有缓存处理。"""
+        self.assertIsNone(read_dictionary_cache())
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+        # 先写一份正常缓存，再逐种方式把它写坏。
+        write_dictionary_cache(self.dictionary_of([{"jsid": "JSID-1", "jsmc": "格物楼B101"}]), CACHE_WRITTEN_AT)
+        for broken in ("{", '{"max_row": 5000}', "[]"):
+            with open(dictionary_cache_path(), "w", encoding="utf-8") as handle:
+                handle.write(broken)
+            self.assertIsNone(read_dictionary_cache())
+        parsed = self.parsed_table([("格物楼B101", set())])
+        write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, parsed, CACHE_WRITTEN_AT)
+        # 读另一个学期时文件里的 semester 对不上，不能把这份名单当作它的缓存。
+        self.assertIsNone(read_semester_cache("2026-2027-2"))
+        with open(semester_cache_path(SELECTED_SEMESTER), "w", encoding="utf-8") as handle:
+            handle.write('{"semester": "2026-2027-1", "rooms": "格物楼B101"}')
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+
+
+class ClassroomCacheExpiryTest(unittest.TestCase):
+    """任务 6 / 设计「缓存」：7 日过期判断是纯函数，写入时间与当前时间都由参数传入。"""
+
+    # 缓存写入时刻，判定只比较它与传入的当前时刻。
+    WRITTEN = "2026-10-01T09:30:00+08:00"
+
+    def moment(self, days=0, seconds=0):
+        """取写入时刻之后的一段时刻，用来测 7 日边界。"""
+        return datetime(2026, 10, 1, 9, 30, tzinfo=CACHE_TIMEZONE) + timedelta(days=days, seconds=seconds)
+
+    def test_ttl_is_seven_days(self):
+        self.assertEqual(CACHE_TTL_DAYS, 7)
+
+    def test_fresh_cache_is_not_expired(self):
+        self.assertFalse(cache_expired(self.WRITTEN, self.WRITTEN))
+        self.assertFalse(cache_expired(self.WRITTEN, self.moment(days=6)))
+
+    def test_exactly_seven_days_is_still_usable(self):
+        """正好第 7 天仍算可用：需求口径是早于 7 日才刷新。"""
+        self.assertFalse(cache_expired(self.WRITTEN, self.moment(days=7)))
+        self.assertFalse(cache_expired(self.WRITTEN, self.moment(days=CACHE_TTL_DAYS)))
+
+    def test_seven_days_and_one_second_is_expired(self):
+        self.assertTrue(cache_expired(self.WRITTEN, self.moment(days=7, seconds=1)))
+
+    def test_eight_days_is_expired(self):
+        self.assertTrue(cache_expired(self.WRITTEN, self.moment(days=8)))
+
+    def test_datetime_arguments_are_accepted(self):
+        """时刻也可以直接用 datetime 传，不必先转成文本。"""
+        self.assertFalse(cache_expired(self.moment(), self.moment(days=3)))
+        self.assertTrue(cache_expired(self.moment(), self.moment(days=8)))
+
+    def test_timestamps_in_other_offsets_compare_as_moments(self):
+        """同一时刻的两种时区写法判定一致，不受写法影响。"""
+        # 2026-10-01T01:30:00+00:00 与 2026-10-01T09:30:00+08:00 是同一时刻。
+        self.assertFalse(cache_expired("2026-10-01T01:30:00+00:00", "2026-10-08T09:30:00+08:00"))
+        self.assertFalse(cache_expired("2026-10-01T01:30:00Z", "2026-10-08T01:30:00Z"))
+
+    def test_unreadable_or_timezone_less_timestamp_is_expired(self):
+        """读不出时刻或没带时区时按过期处理：不猜它属于哪个时区。"""
+        for value in ("", None, "昨天", 12345, "2026-10-01T09:30:00"):
+            self.assertTrue(cache_expired(value, self.moment(days=1)), value)
+        self.assertTrue(cache_expired(self.WRITTEN, ""))
+
+    def test_judgement_never_reads_the_system_clock(self):
+        """2000 年的两个时刻今天跑仍判为未过期，说明只看传入的两个参数。"""
+        self.assertFalse(cache_expired("2000-01-01T00:00:00+08:00", "2000-01-05T00:00:00+08:00"))
+        self.assertTrue(cache_expired("2000-01-01T00:00:00+08:00", "2026-10-08T09:30:00+08:00"))
+
+
+class ClassroomSemesterCompletenessTest(unittest.TestCase):
+    """任务 6 / 设计术语「完整学期」：完整性只由教室名数按季节阈值决定。"""
+
+    def test_autumn_and_spring_need_two_hundred_rooms(self):
+        for semester in ("2026-2027-1", "2026-2027-2"):
+            self.assertFalse(semester_complete(semester, 199))
+            self.assertTrue(semester_complete(semester, 200))
+
+    def test_summer_needs_fifty_rooms(self):
+        self.assertFalse(semester_complete("2026-2027-3", 49))
+        self.assertTrue(semester_complete("2026-2027-3", 50))
+
+    def test_malformed_semester_is_never_complete(self):
+        for semester in ("", "全部", None, "2026-2027", "2026-2027-4"):
+            self.assertFalse(semester_complete(semester, 5000))
+
+
+class ClassroomCacheWriteGuardTest(ClassroomCacheTestCase):
+    """任务 6 / 需求 2.6、8.3、8.4：残缺结果与失败页都不写缓存。"""
+
+    def test_failed_pages_are_never_cached(self):
+        """登录页、会话互踢、非法访问、缺表、非 35 格、节次出错都写不出学期缓存。"""
+        pages = (
+            ("<html><head><title>登录</title></head><body>请输入账号 请输入密码</body></html>", "登录"),
+            ("<html><body>您的账号在其它地方登录</body></html>", "互踢"),
+            ("<html><body>提示：非法访问！</body></html>", "非法访问"),
+            ("<html><body>查询节次出错，请确认是否设置了该学期课表节次！</body></html>", "节次"),
+            (classroom_table([("格物楼B101", grid_cells({0})[:-1])]), "35"),
+            (classroom_table([data_row("演播厅", {0})]), "教室名"),
+            ("<html><head><title>" + PARENT_TITLE + "</title></head><body><table id='other'></table></body></html>", "kbtable"),
+        )
+        for page, text in pages:
+            payload, error = write_semester_cache_from_page(SELECTED_SEMESTER, PARENT_MODE_ID, page)
+            self.assertIsNone(payload)
+            self.assertIsNotNone(error)
+            self.assertFalse(error["ok"])
+            self.assertIn(text, error["error"])
+            self.assertNotIn("rooms", error)
+            # 正文不可用时缓存文件不该出现。
+            self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+
+    def test_writers_refuse_inputs_that_are_not_parse_results(self):
+        """解析失败拿到的 None 与其他类型都报类型错误，不落盘。"""
+        for value in (None, "html", [], 3):
+            with self.assertRaises(TypeError):
+                write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, value)
+            with self.assertRaises(TypeError):
+                write_dictionary_cache(value)
+        # 是对象但字段不全（缺 records 的写法）同样不是成功解析的结果。
+        with self.assertRaises(TypeError):
+            write_dictionary_cache({})
+        self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+        self.assertFalse(os.path.exists(dictionary_cache_path()))
+
+    def test_writers_refuse_empty_parse_results(self):
+        """解析结果里没有数据行或一条记录都没有时同样不写缓存。"""
+        for value in ({}, {"rows": []}):
+            with self.assertRaises(ValueError):
+                write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, value)
+        with self.assertRaises(ValueError):
+            write_dictionary_cache({"records": []})
+        self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+        self.assertFalse(os.path.exists(dictionary_cache_path()))
+
+    def test_truncated_dictionary_is_never_cached(self):
+        """list 长度等于 maxRow 的截断名单不能当全集，也不允许落盘。"""
+        items = [{"jsid": "JSID-1", "jsmc": "格物楼B101"}]
+        truncated, error = parse_dictionary(json.dumps({"result": True, "list": items}), 1)
+        self.assertIsNone(truncated)
+        self.assertIsNotNone(error)
+        with self.assertRaises(TypeError):
+            write_dictionary_cache(truncated)
+        self.assertFalse(os.path.exists(dictionary_cache_path()))
+
+    def test_malformed_semester_has_no_cache_path_to_write(self):
+        """学期格式不符时拼不出缓存文件名，写函数报错，也不在缓存目录里留下东西。"""
+        parsed = self.parsed_table([("格物楼B101", set())])
+        for semester in ("", "全部", "2026-2027", "../escape"):
+            self.assertEqual(semester_cache_path(semester), "")
+            with self.assertRaises(ValueError):
+                write_semester_cache(semester, PARENT_MODE_ID, parsed)
+        self.assertFalse(os.path.exists(self.cache_root))
+
+
+class ClassroomCacheRoundTripPropertyTest(ClassroomCacheTestCase):
+    """任务 6.2 / 设计 Correctness Properties 第 13 条 / 需求 2.7、6.6：缓存往返保持字段不变。"""
+
+    # 固定种子让属性测试可复现。
+    SEED = 20261012
+
+    # 轮数，覆盖多组随机 jsid、教室名与合称名。
+    ROUNDS = 20
+
+    def random_jsid(self, generator):
+        """随机生成一个形如教务返回的 32 位十六进制 jsid。"""
+        return format(generator.getrandbits(128), "032X")
+
+    def random_room_name(self, generator, index):
+        """随机拼一个能展开出房号的展示名：一半是合称，一半是单体名。"""
+        building = generator.choice(BUILDING_POOL)
+        number = generator.randint(1, 9) * 100 + index
+        # 一半的轮次拼成合称，覆盖首格一次给出多间教室的写法。
+        if generator.random() < 0.5:
+            separator = generator.choice(("、", "."))
+            return building + str(number) + separator + str(number + generator.randint(1, 20))
+        return building + str(number)
+
+    def test_dictionary_round_trip_keeps_every_jsid_and_room_name(self):
+        """字典往返后 jsid、jsmc 与展开出的教室名逐条一致。"""
+        generator = random.Random(self.SEED)
+        items = []
+        expected_ids = []
+        expected_names = []
+        expected_rooms = []
+        for index in range(self.ROUNDS):
+            jsid = self.random_jsid(generator)
+            name = self.random_room_name(generator, index)
+            items.append({"jsid": jsid, "jsmc": name})
+            expected_ids.append(jsid)
+            expected_names.append(name)
+            expected_rooms.append(expand_room_name(name)["rooms"])
+        write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
+        read_back = read_dictionary_cache()
+        self.assertIsNotNone(read_back)
+        self.assertEqual([record["jsid"] for record in read_back["records"]], expected_ids)
+        self.assertEqual([record["jsmc"] for record in read_back["records"]], expected_names)
+        self.assertEqual([record["rooms"] for record in read_back["records"]], expected_rooms)
+        self.assertEqual(read_back["record_count"], self.ROUNDS)
+        self.assertEqual(read_back["room_count"], sum(len(rooms) for rooms in expected_rooms))
+
+    def test_semester_round_trip_keeps_every_room_name(self):
+        """学期往返后教室名逐字一致，行数与教室数也对得上。"""
+        generator = random.Random(self.SEED)
+        rows = []
+        expected = set()
+        for index in range(self.ROUNDS):
+            name = self.random_room_name(generator, index)
+            rows.append((name, {index % GRID_CELL_COUNT}))
+            for room in expand_room_name(name)["rooms"]:
+                expected.add(room)
+        write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, self.parsed_table(rows), CACHE_WRITTEN_AT)
+        read_back = read_semester_cache(SELECTED_SEMESTER)
+        self.assertIsNotNone(read_back)
+        self.assertEqual(read_back["rooms"], sorted(expected))
+        self.assertEqual(read_back["room_count"], len(expected))
+        self.assertEqual(read_back["source_row_count"], len(rows))
+        self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
 
 
 if __name__ == "__main__":

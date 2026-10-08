@@ -1,12 +1,15 @@
-"""查无上课教室的纯规则：参数校验、本学年学期列表、父页与课表解析。
+"""查无上课教室的纯规则：参数校验、本学年学期列表、父页与课表解析，以及缓存读写。
 
-本模块只放不联网的规则，请求与编排在后续任务里接上。
+本模块不联网：请求与编排在后续任务里接上，缓存只落盘解析成功的正文结果。
 """
 
 import json
+import os
 import re
+from datetime import datetime, timedelta, timezone
 
 from .jwxt_auth import contains_any, strip_tags
+from .jwxt_client import expand_path, state_dir, write_private_file
 from .jwxt_html import LOGIN_MARKERS, attr, parse_table_html
 from .jwxt_schedule import KBTABLE_RE
 from .result import failure
@@ -96,6 +99,25 @@ PARENT_HINT = "请从教务侧栏重新进入「全校性教室课表」后再�
 GRID_HINT = "课表结构与预期不符，请确认教务是否改版后重试"
 # 字典不可用时的提示：旧字典能不能继续用由调用方按缓存期限判断。
 DICTIONARY_HINT = "请稍后重试；本地有 7 日内旧字典时仍可继续使用旧字典"
+
+# 缓存目录的环境变量：改的是目录，不是文件名。
+CACHE_ENV_VAR = "QFNU_CLASSROOM_CACHE_PATH"
+# 状态目录下的缓存子目录名，字典文件与各学期文件都放这里。
+CACHE_DIR_NAME = "classroom-schedule"
+# 字典缓存文件名。
+DICTIONARY_CACHE_NAME = "dictionary.json"
+# 学期缓存文件名后缀，学期值加它拼成 <学期>.json。
+SEMESTER_CACHE_SUFFIX = ".json"
+# 缓存有效期天数：超过 7 日才刷新，正好满 7 日仍算可用。
+CACHE_TTL_DAYS = 7
+# 缓存时间戳的时区：教务在东八区，写入时间固定带 +08:00。
+CACHE_TIMEZONE = timezone(timedelta(hours=8))
+# 完整学期的教室名数阈值：低于阈值说明响应被截断，不能当全年是否有课的证据。
+SEMESTER_MIN_ROOMS = {
+    "1": 200,  # 秋季
+    "2": 200,  # 春季
+    "3": 50,  # 夏季开课少，阈值低
+}
 
 # 页面标题，用来区分登录页、非法访问页与目标页面。
 TITLE_RE = re.compile(r"(?is)<title\b[^>]*>(.*?)</title\s*>")
@@ -711,3 +733,249 @@ def free_blocks_of_day(occupancy, weekday):
         if not day.get(name, False):
             free.append(name)
     return free
+
+
+# 缓存层：只把解析成功的字典与学期教室名写盘，读不出内容时按没有缓存处理。
+
+
+def cache_dir():
+    """取缓存目录；环境变量改的是目录，不是文件名。
+
+    QFNU_CLASSROOM_CACHE_PATH 指定整目录，字典文件与各学期文件都落在该目录；没给环境变量时
+    用状态目录下的 classroom-schedule 子目录。
+    """
+    value = os.environ.get(CACHE_ENV_VAR, "").strip()
+    # 指定了环境变量就整目录用它，文件名仍由本模块决定。
+    if value:
+        return expand_path(value)
+    return os.path.join(state_dir(), CACHE_DIR_NAME)
+
+
+def dictionary_cache_path():
+    """取字典缓存文件路径：缓存目录下的 dictionary.json。"""
+    return os.path.join(cache_dir(), DICTIONARY_CACHE_NAME)
+
+
+def semester_cache_path(semester):
+    """取某学期的缓存文件路径；学期格式不是 YYYY-YYYY-N 时返回空串。
+
+    学期值直接参与拼文件名，格式不符的值（例如带路径分隔符）不得用来拼路径，因此按没有
+    这个学期的缓存处理。
+    """
+    text = str(semester if semester is not None else "").strip()
+    # 格式不符时拼不出安全的文件名，调用方只能当这个学期没有缓存。
+    if parse_semester(text) is None:
+        return ""
+    return os.path.join(cache_dir(), text + SEMESTER_CACHE_SUFFIX)
+
+
+def now_moment():
+    """取当前时刻，固定东八区；缓存时间戳都从它出发，避免各处各算一遍时区。"""
+    return datetime.now(CACHE_TIMEZONE)
+
+
+def timestamp_text(moment):
+    """把时刻写成缓存时间戳：东八区、秒精度，形如 2026-10-08T09:30:00+08:00。"""
+    # 不带时区的时刻按东八区理解，写出的时间戳不随运行机器的本地时区变化。
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=CACHE_TIMEZONE)
+    return moment.astimezone(CACHE_TIMEZONE).isoformat(timespec="seconds")
+
+
+def parse_timestamp(value):
+    """把时间戳读成带时区的时刻；读不出或没有时区时返回 None。
+
+    没有时区的值不猜它是哪个时区，按读不出处理，调用方把该缓存当成过期去刷新。
+    """
+    moment = value if isinstance(value, datetime) else None
+    # 文本时间戳按 ISO 解析，末尾的 Z 当作 UTC。
+    if moment is None:
+        text = str(value if value is not None else "").strip()
+        # 空值读不出时刻。
+        if not text:
+            return None
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    # 没有时区的时刻无法与另一个时刻相减，按读不出处理。
+    if moment.tzinfo is None:
+        return None
+    return moment
+
+
+def cache_expired(fetched_at, now):
+    """判断缓存是否过期：写入到现在的间隔超过 7 日才算过期。
+
+    纯函数：写入时间与当前时间都由调用方传入，函数内部不读系统时钟，编排与测试都好复用。
+    正好满 7 日仍算可用（需求口径是早于 7 日才刷新）；时间戳读不出时按过期处理，调用方会去
+    刷新这份缓存。字典与学期缓存共用它。
+    """
+    written = parse_timestamp(fetched_at)
+    moment = parse_timestamp(now)
+    # 任一时间戳读不出时判断不了新鲜度，只能按过期处理。
+    if written is None or moment is None:
+        return True
+    return moment - written > timedelta(days=CACHE_TTL_DAYS)
+
+
+def semester_complete(semester, room_count):
+    """判断某学期的教室名数是否达到完整阈值；学期格式不符时返回 False。
+
+    秋季、春季要至少 200 间，夏季至少 50 间：低于阈值说明响应不完整，该学期既不能证明有
+    排课，也不能证明全年无课。
+    """
+    rank = parse_semester(semester)
+    # 学期格式不符时取不出季节，无从判断阈值。
+    if rank is None:
+        return False
+    return room_count >= SEMESTER_MIN_ROOMS[str(rank[1])]
+
+
+def parsed_room_names(parsed):
+    """取课表解析结果里各数据行首格展开出的单体教室名，去重后排序。
+
+    学期缓存只存教室名：判定用不到占用位与单元格内容，所以只取首格结果。
+    """
+    names = set()
+    for row in parsed["rows"]:
+        for name in row["rooms"]:
+            names.add(name)
+    return sorted(names)
+
+
+def write_cache_file(path, payload):
+    """把缓存对象写成 JSON 文件：目录随文件建出，文件按私有权限写。"""
+    body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    write_private_file(path, body, "w")
+
+
+def read_cache_file(path):
+    """读缓存文件并返回里面的对象；路径为空、文件缺失、读不动或不是对象时返回 None。
+
+    缓存缺失或损坏都按「没有缓存」处理：不做部分解析，调用方会去刷新。
+    """
+    # 拼不出路径（学期格式不符）时没有对应的缓存文件。
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    # 缓存内容不是对象时读不出字段，按没有缓存处理。
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def write_dictionary_cache(dictionary, fetched_at=None):
+    """把教室字典写入缓存文件，返回写入的内容。
+
+    只写设计约定的字段：fetched_at、max_row、record_count、room_count 与每条记录的 jsid、
+    jsmc、rooms。字典不是一次成功解析的结果（解析失败拿到的 None 等）时直接报错不写：残缺
+    名单不能当全集。文件里不保存 Cookie、encoded、账号密码，也不保存任何单元格内容。
+    """
+    # 解析失败拿到的 None 或其他类型不是字典解析结果，属于调用方式错误。
+    if not isinstance(dictionary, dict):
+        raise TypeError("dictionary cache requires a parsed dictionary")
+    records = dictionary.get("records")
+    # 缺记录列表说明它不是成功解析的结果，残缺名单不允许写盘。
+    if not isinstance(records, list):
+        raise TypeError("dictionary cache requires parsed records")
+    # 一条记录都没有的字典不是全量名单，同样不允许写盘。
+    if not records:
+        raise ValueError("dictionary cache requires at least one record")
+    cached_records = []
+    room_count = 0
+    for record in records:
+        rooms = list(record.get("rooms") or ())
+        room_count += len(rooms)
+        cached_records.append(
+            {
+                "jsid": str(record.get("jsid") or ""),
+                "jsmc": str(record.get("jsmc") or ""),
+                "rooms": rooms,
+            }
+        )
+    payload = {
+        "fetched_at": timestamp_text(fetched_at if fetched_at is not None else now_moment()),
+        "max_row": dictionary.get("max_row"),
+        "record_count": len(cached_records),
+        "room_count": room_count,
+        "records": cached_records,
+    }
+    write_cache_file(dictionary_cache_path(), payload)
+    return payload
+
+
+def read_dictionary_cache():
+    """读字典缓存，返回缓存内容；缺失、损坏或字段不全时返回 None。"""
+    payload = read_cache_file(dictionary_cache_path())
+    # 没有缓存文件时就是没有可用字典。
+    if payload is None:
+        return None
+    # records 不是数组说明缓存字段不全，不能拿它当教室全集。
+    if not isinstance(payload.get("records"), list):
+        return None
+    return payload
+
+
+def write_semester_cache(semester, kbjcmsid, parsed, fetched_at=None):
+    """把某学期有排课的教室名写入缓存文件，返回写入的内容。
+
+    只收通过完整性校验的课表解析结果：解析失败拿到的 None 与没有数据行的结果都直接报错不写，
+    残缺 HTML、登录页、会话互踢、格数不是 35 的页面都进不到这里。缓存只存教室名，不存占用位、
+    单元格内容、Cookie 或 encoded。
+    """
+    # 解析失败拿到的 None 或其他类型不是课表解析结果，属于调用方式错误。
+    if not isinstance(parsed, dict):
+        raise TypeError("semester cache requires a parsed classroom table")
+    rows = parsed.get("rows")
+    # 没有数据行说明解析结果残缺，不写缓存，避免把残缺名单当成该学期的全部教室。
+    if not rows:
+        raise ValueError("semester cache requires parsed rows")
+    path = semester_cache_path(semester)
+    # 学期格式不符时拼不出缓存文件名，这个学期的教室名没有可落盘的位置。
+    if not path:
+        raise ValueError("semester cache requires a semester like 2026-2027-1")
+    rooms = parsed_room_names(parsed)
+    payload = {
+        "semester": str(semester).strip(),
+        "kbjcmsid": str(kbjcmsid if kbjcmsid is not None else "").strip(),
+        "fetched_at": timestamp_text(fetched_at if fetched_at is not None else now_moment()),
+        "complete": semester_complete(semester, len(rooms)),
+        "source_row_count": len(rows),
+        "room_count": len(rooms),
+        "rooms": rooms,
+    }
+    write_cache_file(path, payload)
+    return payload
+
+
+def read_semester_cache(semester):
+    """读某学期的教室名缓存，返回缓存内容；缺失、损坏或字段不全时返回 None。"""
+    payload = read_cache_file(semester_cache_path(semester))
+    # 没有缓存文件时就是这个学期没有教室名缓存。
+    if payload is None:
+        return None
+    # rooms 不是数组说明缓存字段不全，不能拿它当教室名列表。
+    if not isinstance(payload.get("rooms"), list):
+        return None
+    # 文件里的学期与要读的学期不一致说明文件被换过，按没有缓存处理。
+    if str(payload.get("semester") or "") != str(semester or "").strip():
+        return None
+    return payload
+
+
+def write_semester_cache_from_page(semester, kbjcmsid, raw, fetched_at=None):
+    """解析一份学期课表正文并写缓存，返回 (缓存内容, 失败结果)。
+
+    正文不可用（登录页、会话互踢、非法访问、缺 kbtable、格数不是 35、查询节次出错）时只返回
+    失败结果且不落盘：这类页面必须整份弃用，不能把残缺名单写进缓存。
+    """
+    parsed, error = parse_classroom_table(raw)
+    # 响应不可用时缓存文件保持原样。
+    if error is not None:
+        return None, error
+    return write_semester_cache(semester, kbjcmsid, parsed, fetched_at), None
