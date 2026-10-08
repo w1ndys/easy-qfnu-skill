@@ -1,7 +1,7 @@
 """查无上课教室的纯规则与只读请求：参数校验、学期列表、页面解析、缓存读写与请求构造。
 
-本模块只发学生端教室课表的三条只读请求，并把残缺正文挡在缓存之外；编排（刷新顺序、会话
-中断与门槛判断）在后续任务里接上。
+本模块只发学生端教室课表的三条只读请求，按固定顺序刷新缓存并只发一次带时间参数的课表，把
+残缺正文挡在缓存之外；反推与结果组装在反推层。
 """
 
 import http.client
@@ -1652,3 +1652,225 @@ def fetch_query_page(client, semester, kbjcmsid, week_start, week_end, weekday, 
         CLASSROOM_REFERER,
         accept_query_page,
     )
+
+
+# 编排层：按固定顺序刷新缓存并只发一次带周次与星期的课表，再交给反推层组装结果。
+
+# 目标学期不可用时只能改用本学年下拉里的学期，继续拉其他学期也查不出这一个。
+TARGET_SEMESTER_HINT = "请改用父页下拉里本学年的学期后重试"
+# 本学年学期没有可用缓存时的提示：全年无课名单不完整，不能把缺失的行当成不上课。
+SEMESTER_CACHE_HINT = "请稍后重试；本学年学期教室名单不完整时无法判断哪些教室全年无课"
+
+# 学期教室名的三种来源：直接用未过期缓存、这次刷新成功、刷新失败退回未过期的旧缓存。
+SEMESTER_FROM_CACHE = "cache"
+SEMESTER_REFRESHED = "refreshed"
+SEMESTER_STALE = "stale"
+
+
+def dictionary_records(dictionary):
+    """取字典里的记录列表；字典不是对象或缺 records 时返回空列表。
+
+    空列表等于没有教室全集，调用方按没有可用字典处理，不会拿它反推。
+    """
+    records = dictionary.get("records") if isinstance(dictionary, dict) else None
+    # records 不是数组时取不出任何教室，按空名单处理。
+    if not isinstance(records, list):
+        return []
+    return records
+
+
+def cache_usable(payload, now):
+    """判断缓存内容还能不能用：有内容且写入时间未超过 7 日。
+
+    正好满 7 日仍算可用，过期缓存不算可用：调用方会去刷新这份缓存。时间戳读不出时同样算不可用。
+    """
+    # 读不出缓存内容（文件缺失或损坏）时没有可用缓存。
+    if payload is None:
+        return False
+    return not cache_expired(payload.get("fetched_at"), now)
+
+
+def session_lost(error):
+    """判断失败是不是会话失效：登录页与互踢提示都只能重新登录，改参数没用。"""
+    text = str(error.get("error") or "")
+    # 正文是登录页或互踢提示时本次会话已经不可用，后面的 POST 拿不到别的东西。
+    return ("登录页" in text) or (SESSION_KICKED_TEXT in text)
+
+
+def query_plan(page, params):
+    """定下本次查询要用的本学年学期列表，返回 (学期列表, 警告, 失败结果)。
+
+    只取目标学年：其他学年（含未来学年）的项不进列表，也不会为它们发 POST。目标学期不在本学年
+    列表里时在这里停下，调用方不会再发任何请求。
+    """
+    semesters, warnings = year_semester_list(page["semesters"], params["semester"])
+    # 本学年一个学期都取不出时推不出全年无课名单，直接停下。
+    if semesters is None:
+        message = "父页下拉里没有本学年学期，无法使用该学期: semester=" + str(params["semester"])
+        return None, warnings, failure("jwxt", message, TARGET_SEMESTER_HINT)
+    # 目标学期不在本学年列表里时停在这里：继续拉其他学期也查不出这一个。
+    if params["semester"] not in semesters:
+        picked = str(params["semester"])
+        message = "目标学期不属于本学年或不在父页下拉中，无法使用该学期: semester=" + picked
+        return None, warnings, failure("jwxt", message, TARGET_SEMESTER_HINT)
+    return semesters, warnings, None
+
+
+def collect_dictionary(client, now):
+    """取本次查询要用的字典，返回 (字典, 是否降级用旧字典, 失败结果)。
+
+    缓存缺失或早于 7 日时刷新：刷新成功就写盘并用这份新名单。刷新失败（含 list 长度等于 maxRow
+    被截断、result 不是 true）时不使用该次响应，再看一眼缓存：未过期的旧字典可以继续用并标记
+    stale_dictionary，没有可用字典则停止反推。
+    """
+    cached = read_dictionary_cache()
+    # 缓存还在 7 日内且名单非空时直接用，不必再发字典请求。
+    if cache_usable(cached, now) and dictionary_records(cached):
+        return cached, False, None
+    fresh, error = fetch_dictionary(client)
+    # 刷新成功且拿到记录时写盘并返回：这份名单就是本次查询的教室全集。
+    if error is None and dictionary_records(fresh):
+        write_dictionary_cache(fresh, now)
+        return fresh, False, None
+    # 刷新失败后重新读一次缓存文件：这期间别的进程可能已经刷新好字典。
+    again = read_dictionary_cache()
+    # 未过期的旧字典仍能说明哪些教室存在，可以继续用，但要标记这次没刷新成功。
+    if cache_usable(again, now) and dictionary_records(again):
+        return again, True, None
+    # 解析成功但名单为空说明服务端没给出教室，同样没有可用的历史字典。
+    if error is None:
+        error = failure("jwxt", "教室字典名单为空", DICTIONARY_HINT)
+    return None, False, error
+
+
+def semester_rooms_for(client, semester, kbjcmsid, now):
+    """取某学期有排课的教室名，返回 (教室名列表, 来源, 失败结果)。
+
+    缓存缺失或早于 7 日时刷新：正文通过完整性校验时会顺带写盘，来源记 refreshed。刷新失败时
+    再看一眼缓存，未过期的旧缓存可以继续用于全年无课判断，来源记 stale；过期缓存不算可用，
+    没有可用缓存时返回失败结果。会话中途失效时直接返回该失败结果，调用方必须停止后续 POST。
+    """
+    cached = read_semester_cache(semester)
+    # 缓存还在 7 日内时直接用它的教室名，不必再发这个学期的课表请求。
+    if cache_usable(cached, now):
+        return list(cached["rooms"]), SEMESTER_FROM_CACHE, None
+    fresh, error = fetch_semester_page(client, semester, kbjcmsid)
+    # 刷新成功时正文已经通过完整性校验并写盘，这份教室名就是该学期的名单。
+    if error is None:
+        return list(fresh["rooms"]), SEMESTER_REFRESHED, None
+    # 会话失效与参数无关，换缓存也救不回来，立刻把失败交给调用方去停下。
+    if session_lost(error):
+        return None, SEMESTER_FROM_CACHE, error
+    # 刷新失败后重新读一次缓存文件：这期间别的进程可能已经刷新好这个学期。
+    again = read_semester_cache(semester)
+    # 未过期的旧缓存可以继续用于全年无课判断，但要记下这个学期这次没刷新成功。
+    if cache_usable(again, now):
+        return list(again["rooms"]), SEMESTER_STALE, None
+    # 过期缓存不算可用：这个学期的缺失行不能被解释成不上课，只能停下。
+    message = "本学年学期没有可用缓存，全年无课名单不完整: semester=" + str(semester)
+    if error.get("error"):
+        message = message + "；刷新失败: " + str(error["error"])
+    return None, SEMESTER_FROM_CACHE, failure("jwxt", message, SEMESTER_CACHE_HINT)
+
+
+def collect_year_rooms(client, semesters, kbjcmsid, now):
+    """补齐本学年学期缓存，返回 (学期 → 教室名列表, 刷新过的学期, 用了旧缓存的学期, 失败结果)。
+
+    只拉传进来的本学年学期，不碰其他学年。某个学期没有可用缓存或中途会话失效时返回失败结果：
+    这两种情况下全年无课名单都不完整，缺失的行不能被解释成不上课。
+    """
+    rooms_by_semester = {}
+    refreshed = []
+    stale = []
+    for semester in semesters:
+        rooms, source, error = semester_rooms_for(client, semester, kbjcmsid, now)
+        # 会话失效或没有可用缓存时立刻停下，已经通过校验并写盘的缓存保持原样。
+        if error is not None:
+            return None, refreshed, stale, error
+        rooms_by_semester[semester] = rooms
+        # 只有这次真的刷新成功的学期进 refreshed，用户才知道哪些学期是刚拉的。
+        if source == SEMESTER_REFRESHED:
+            refreshed.append(semester)
+        # 刷新失败但用未过期旧缓存顶上的学期也要标出来，名单不是这次拉的。
+        elif source == SEMESTER_STALE:
+            stale.append(semester)
+    return rooms_by_semester, refreshed, stale, None
+
+
+def query_page_of(client, params, dictionary, kbjcmsid):
+    """发本次查询的课表 POST，返回 (解析结果, 失败结果)。
+
+    关键词与某条未展开 jsmc 完全相同时把 skjs 设为该原名，其余情况留空只在本地按展示名过滤。
+    周次与星期写进表单、节次留空以取整天 35 格；这份带时间参数的正文不写学期缓存。
+    """
+    skjs = keyword_skjs(params["keyword"], dictionary.get("records") or ())
+    return fetch_query_page(
+        client,
+        params["semester"],
+        kbjcmsid,
+        params["week_start"],
+        params["week_end"],
+        params["weekday"],
+        skjs,
+    )
+
+
+def with_plan_warnings(result, warnings):
+    """把本学年学期列表阶段的警告并进结果信封：下拉里格式不符的项要让用户看到。"""
+    # 失败结果没有 warnings 字段，也没有教室说明可合并，原样返回。
+    if not warnings or not result.get("ok"):
+        return result
+    result["warnings"] = merged_warnings(warnings, result.get("warnings"))
+    return result
+
+
+def query_empty_classrooms(
+    client, semester, week_start, week_end, weekday, period_start, period_end, keyword=""
+):
+    """查不上课教室：编排参数校验、缓存刷新、门槛判断与本次课表查询，返回结果信封。
+
+    client 是已登录的只读会话（有 text 方法即可），后 7 个参数对应 CLI 的 --semester、--week、
+    --week-end、--weekday、--period-start、--period-end 与 --keyword。调用顺序固定：清掉本进程
+    上一次等到的刷新结果 → 校验参数 → 读父页 → 定本学年学期 → 刷新字典 → 补齐本学年学期缓存 →
+    发一次带周次与星期的课表（jc 留空）→ 反推求差。参数无效时一个上游请求都不发；失败结果沿用
+    ok=false、error 与 hint 且不含 rooms，成功结果的 cache 字段说明本次用了哪些学期。
+    """
+    # 本次查询自己去刷新资源，不复用本进程上一次查询等到的结果。
+    reset_serial_refresh()
+    params, error = validate_query(
+        semester, week_start, week_end, weekday, period_start, period_end, keyword
+    )
+    # 参数无效时连父页都不读，避免把无效参数带进上游请求。
+    if error is not None:
+        return error
+    now = now_moment()
+    page, error = fetch_parent_page(client)
+    # 父页不可用（登录页、会话互踢、非法访问、标题不符）时不再发任何 POST。
+    if error is not None:
+        return error
+    semesters, warnings, error = query_plan(page, params)
+    # 目标学期不在该学年下拉里时停下，一个上游请求都不发。
+    if error is not None:
+        return error
+    dictionary, stale_dictionary, error = collect_dictionary(client, now)
+    # 没有可用字典时停止反推：没有教室全集就判不出哪些教室不上课。
+    if error is not None:
+        return error
+    rooms_by_semester, refreshed, stale, error = collect_year_rooms(
+        client, semesters, page["kbjcmsid"], now
+    )
+    # 会话中途失效或某个学期没有可用缓存时停下：全年无课名单不完整。
+    if error is not None:
+        return error
+    parsed, error = query_page_of(client, params, dictionary, page["kbjcmsid"])
+    # 课表不可用（登录页、互踢、缺表、格数不是 35、节次出错）时失败结果里不含 rooms。
+    if error is not None:
+        return error
+    cache = {
+        "semesters": semesters,
+        "refreshed_semesters": refreshed,
+        "stale_semesters": stale,
+        "stale_dictionary": stale_dictionary,
+    }
+    result = empty_classroom_result(dictionary, rooms_by_semester, parsed, params, cache)
+    return with_plan_warnings(result, warnings)

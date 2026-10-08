@@ -48,6 +48,7 @@ from qfnu.jwxt_classroom import (
     free_blocks_of_day,
     keyword_skjs,
     normalize_room_name,
+    now_moment,
     occupied_rooms,
     parse_academic_year,
     parse_classroom_page,
@@ -55,6 +56,7 @@ from qfnu.jwxt_classroom import (
     parse_dictionary,
     parse_semester,
     query_blocks,
+    query_empty_classrooms,
     query_form,
     read_dictionary_cache,
     read_semester_cache,
@@ -1443,7 +1445,6 @@ def request_form_fields(call):
     """
     text = call["body"].decode("utf-8")
     return {key: values[0] for key, values in parse_qs(text, keep_blank_values=True).items()}
-    return {key: values[0] for key, values in parse_qs(call["body"].decode("utf-8")).items()}
 
 
 def truncated_transfer():
@@ -2633,5 +2634,504 @@ class ClassroomSingleDayPropertyTest(ClassroomReverseTestCase):
         self.assertFalse(wednesday["free_evening"])
 
 
+# 编排用例：响应都拼在假客户端上，缓存目录在临时目录里，绝不发真实请求、不读真实 Cookie。
+
+
+# 本学年三个学期的教室名范围：秋、春各凑够 200 间阈值，夏季凑够 50 间。
+ORCH_AUTUMN_RANGE = (101, 200)
+ORCH_SPRING_RANGE = (301, 200)
+ORCH_SUMMER_RANGE = (601, 50)
+# 只出现在字典里、本学年哪个学期都没有排课的教室：用来断言全年无课计数。
+ORCH_IDLE_RANGE = (701, 3)
+
+# 本次查询的固定口径：第 6 周星期三 1–2 节，正好落在 0102 块。
+ORCH_WEEK = 6
+ORCH_WEEKDAY = 3
+ORCH_BLOCK = "0102"
+# 本次课表里固定放一行字典外的教室：让响应至少有一行首格能取出教室名，又不影响候选集。
+ORCH_SPARE_ROOM = "格物楼999"
+
+# 失败页插入的三个位置：父页 GET、学期课表 POST、本次查询 POST。
+PARENT_POSITION = "parent"
+SEMESTER_POSITION = "semester"
+QUERY_POSITION = "query"
+
+# 登录页：标题写着登录，正文有登录表单标记。
+LOGIN_PAGE = "<html><head><title>登录</title></head><body>请输入账号 请输入密码</body></html>"
+# 非法访问页：接口路径误写成 kbxx 时会拿到它。
+ILLEGAL_ACCESS_PAGE = "<html><body>提示：非法访问！</body></html>"
+# 会话互踢页：账号在别处登录，与参数无关。
+SESSION_KICKED_PAGE = "<html><body>" + SESSION_KICKED_TEXT + "</body></html>"
+# 标题既不是教室课表也不是登录页：父页位置上说明页面未被识别。
+OTHER_TITLE_PAGE = "<html><head><title>错误提示</title></head><body>系统忙</body></html>"
+# 缺 table#kbtable 的页面：课表 POST 位置拿不到 35 格。
+NO_TABLE_PAGE = (
+    "<html><head><title>" + PARENT_TITLE + "</title></head>"
+    "<body><table id='other'></table></body></html>"
+)
+# 格数不是 35 的课表：结构变了，不能按缺失的列推断空闲。
+SHORT_GRID_PAGE = classroom_table([("格物楼B101", grid_cells({0})[:-1])])
+
+# 失败页样本：(说明, 页面, 不可用的位置, 这次会被请求几次)。
+# 登录页、非法访问与互踢都是完整页面，重试也拿不到别的，所以只请求一次；
+# 结构坏掉的页面按「正文没传完」重试到次数上限。
+FAILURE_PAGE_SAMPLES = (
+    ("登录页", LOGIN_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
+    ("非法访问", ILLEGAL_ACCESS_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
+    ("会话互踢", SESSION_KICKED_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
+    ("标题不是教室课表", OTHER_TITLE_PAGE, (PARENT_POSITION,), FETCH_ATTEMPTS),
+    ("缺 kbtable", NO_TABLE_PAGE, (SEMESTER_POSITION, QUERY_POSITION), FETCH_ATTEMPTS),
+    ("格数不是 35", SHORT_GRID_PAGE, (SEMESTER_POSITION, QUERY_POSITION), FETCH_ATTEMPTS),
+)
+
+
+def orchestration_semester_rooms():
+    """本学年三个学期各自的教室名列表，供写学期缓存与算候选集用。"""
+    return {
+        SELECTED_SEMESTER: semester_room_names(*ORCH_AUTUMN_RANGE),
+        "2026-2027-2": semester_room_names(*ORCH_SPRING_RANGE),
+        "2026-2027-3": semester_room_names(*ORCH_SUMMER_RANGE),
+    }
+
+
+def orchestration_dictionary_names():
+    """字典里的教室名：本学年三个学期的教室加上全年无课的教室。"""
+    rooms = orchestration_semester_rooms()
+    names = list(semester_room_names(*ORCH_IDLE_RANGE))
+    for semester in EXPECTED_YEAR_SEMESTERS:
+        names.extend(rooms[semester])
+    return sorted(names)
+
+
+class CacheRefreshingClient(FakeClassroomClient):
+    """假客户端：命中某次请求时先写一份缓存，模拟另一个进程在这段时间刷新成功。
+
+    命中判定只看表单字段与取值（字典请求按 maxRow、学期请求按 xnxqh）。编排在刷新失败后会重新
+    读一次缓存文件，这个类让那次重读读到未过期的缓存，用来覆盖「刷新失败但有未过期缓存时继续」
+    的降级路径。
+    """
+
+    def __init__(self, responses, field, value, writer):
+        super().__init__(responses)
+        self.field = field  # 命中用的表单字段名
+        self.value = value  # 命中用的字段取值
+        self.writer = writer  # 命中时写缓存的回调，由用例拼好教室名
+
+    def text(self, method, target, body=None, headers=None, same_origin=False):
+        """命中时先写缓存文件，再交出这次请求原本的（失败）响应。"""
+        fields = request_form_fields({"body": body}) if body else {}
+        # 表单字段不等于目标取值时不是要模拟的那次请求，按原样返回。
+        if fields.get(self.field) == self.value:
+            self.writer()
+        return super().text(method, target, body, headers, same_origin)
+
+
+class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
+    """编排用例的共同部分：临时缓存目录、假客户端与拼好的本学年学期教室名。"""
+
+    def run_query(self, client, **overrides):
+        """跑一次编排：默认查 2026-2027-1 第 6 周星期三 1–2 节，返回结果信封。"""
+        values = {
+            "semester": SELECTED_SEMESTER,
+            "week_start": str(ORCH_WEEK),
+            "week_end": str(ORCH_WEEK),
+            "weekday": str(ORCH_WEEKDAY),
+            "period_start": "1",
+            "period_end": "2",
+            "keyword": "",
+        }
+        values.update(overrides)
+        return query_empty_classrooms(
+            client,
+            values["semester"],
+            values["week_start"],
+            values["week_end"],
+            values["weekday"],
+            values["period_start"],
+            values["period_end"],
+            values["keyword"],
+        )
+
+    def dictionary_items(self, names):
+        """把教室名列表拼成字典条目：一条记录一间教室，jsid 按顺序编号。"""
+        return [{"jsid": "JSID-" + str(index), "jsmc": name} for index, name in enumerate(names)]
+
+    def prime_dictionary(self, names, fetched_at=None):
+        """把字典缓存写好；默认时间戳是当前时刻，也就是未过期。"""
+        return write_dictionary_cache(
+            self.dictionary_of(self.dictionary_items(names)), fetched_at or now_moment()
+        )
+
+    def prime_semester(self, semester, names, fetched_at=None):
+        """把某学期的教室名缓存写好；默认时间戳是当前时刻，也就是未过期。"""
+        parsed = self.parsed_table([(name, {0}) for name in names])
+        return write_semester_cache(semester, PARENT_MODE_ID, parsed, fetched_at or now_moment())
+
+    def prime_year(self):
+        """把本学年三个学期的缓存都写成未过期，并按学期返回教室名列表。"""
+        rooms = orchestration_semester_rooms()
+        for semester in EXPECTED_YEAR_SEMESTERS:
+            self.prime_semester(semester, rooms[semester])
+        return rooms
+
+    def expired_moment(self):
+        """取一个早于 7 日的时刻：用它的缓存算过期，编排会去刷新这个学期或字典。"""
+        return now_moment() - timedelta(days=CACHE_TTL_DAYS + 1)
+
+    def semester_response(self, names):
+        """拼一份学期课表响应：一行一间教室，占用格落在当天第一格。"""
+        return "200", classroom_table([data_row(name, {0}) for name in names])
+
+    def query_response(self, rooms=None):
+        """拼一份本次查询的课表响应；不给 rooms 时放一行字典外教室，保证响应可解析。"""
+        picked = [(ORCH_SPARE_ROOM, set())] if rooms is None else list(rooms)
+        return "200", classroom_table([data_row(name, occupied) for name, occupied in picked])
+
+    def assert_failure(self, result, text, hint_text=""):
+        """断言结果是失败、点出原因、不含 rooms，并给出可执行的下一步提示。"""
+        self.assertFalse(result["ok"])
+        self.assertIn(text, result["error"])
+        self.assertTrue(result["hint"])
+        self.assertNotIn("rooms", result)
+        # 会话类失败必须让用户知道要重新登录，否则提示等于没说。
+        if hint_text:
+            self.assertIn(hint_text, result["hint"])
+
+
+class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
+    """任务 11.1 / 需求 2.2、2.6、8.1、8.5、8.6：编排顺序、缓存降级与会话中断。"""
+
+    def test_success_fills_all_four_cache_fields(self):
+        """一次全新查询：缓存缺失时逐个刷新，成功结果按实际来源填 cache 的四个字段。"""
+        rooms = orchestration_semester_rooms()
+        names = orchestration_dictionary_names()
+        occupied = rooms[SELECTED_SEMESTER][0]
+        client = self.fake_client(
+            ("200", parent_page()),
+            dictionary_body(self.dictionary_items(names)),
+            self.semester_response(rooms[SELECTED_SEMESTER]),
+            self.semester_response(rooms["2026-2027-2"]),
+            self.semester_response(rooms["2026-2027-3"]),
+            self.query_response([(occupied, {block_cell_index(ORCH_WEEKDAY, ORCH_BLOCK)})]),
+        )
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["cache"],
+            {
+                "semesters": EXPECTED_YEAR_SEMESTERS,
+                "refreshed_semesters": EXPECTED_YEAR_SEMESTERS,
+                "stale_semesters": [],
+                "stale_dictionary": False,
+            },
+        )
+        # 本学年没排过课的教室只给计数，当天有课的那间也要从结果里去掉。
+        self.assertEqual(result["excluded_year_round_idle_count"], ORCH_IDLE_RANGE[1])
+        self.assertEqual(result["count"], len(names) - ORCH_IDLE_RANGE[1] - 1)
+        self.assertNotIn(occupied, [room["name"] for room in result["rooms"]])
+        # 本次课表按周次与星期过滤，节次留空才能拿到整天 35 格。
+        self.assertEqual(client.calls[-1]["url"], CLASSROOM_IFR_URL)
+        form = request_form_fields(client.calls[-1])
+        self.assertEqual(form["jc1"], "")
+        self.assertEqual(form["jc2"], "")
+        self.assertEqual(form["zc1"], str(ORCH_WEEK))
+        self.assertEqual(form["zc2"], str(ORCH_WEEK))
+        self.assertEqual(form["skxq1"], str(ORCH_WEEKDAY))
+        self.assertEqual(form["skxq2"], str(ORCH_WEEKDAY))
+
+    def test_year_without_a_summer_semester_still_succeeds(self):
+        """父页下拉里没有夏季时只拉秋与春，仍然能反推成功。"""
+        rooms = orchestration_semester_rooms()
+        names = orchestration_dictionary_names()
+        options = ("2026-2027-2", "2026-2027-1", "2025-2026-1")
+        client = self.fake_client(
+            ("200", parent_page(values=options)),
+            dictionary_body(self.dictionary_items(names)),
+            self.semester_response(rooms[SELECTED_SEMESTER]),
+            self.semester_response(rooms["2026-2027-2"]),
+            self.query_response(),
+        )
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["cache"]["semesters"], ["2026-2027-1", "2026-2027-2"])
+        self.assertEqual(result["cache"]["refreshed_semesters"], ["2026-2027-1", "2026-2027-2"])
+
+    def test_unexpired_caches_are_reused_without_extra_posts(self):
+        """缓存都在 7 日内时只发本次课表，不再为字典与学期发请求。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.fake_client(("200", parent_page()), self.query_response())
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[0]["method"], "GET")
+        self.assertEqual(client.calls[1]["url"], CLASSROOM_IFR_URL)
+        self.assertEqual(result["cache"]["semesters"], EXPECTED_YEAR_SEMESTERS)
+        self.assertEqual(result["cache"]["refreshed_semesters"], [])
+        self.assertEqual(result["cache"]["stale_semesters"], [])
+        self.assertFalse(result["cache"]["stale_dictionary"])
+
+    def test_semester_refresh_failure_keeps_an_unexpired_cache(self):
+        """某学期刷新失败、但缓存已被别的进程刷新好时继续，并把该学期记进 stale_semesters。"""
+        rooms = orchestration_semester_rooms()
+        names = orchestration_dictionary_names()
+        spring = "2026-2027-2"
+        self.prime_dictionary(names)
+        # 秋、夏用未过期缓存；春季缓存过期，会去刷新。
+        self.prime_semester(SELECTED_SEMESTER, rooms[SELECTED_SEMESTER])
+        self.prime_semester("2026-2027-3", rooms["2026-2027-3"])
+        self.prime_semester(spring, rooms[spring], self.expired_moment())
+
+        def writer():
+            """模拟另一个进程在这段时间把春季缓存刷新好。"""
+            self.prime_semester(spring, rooms[spring])
+
+        client = CacheRefreshingClient(
+            [
+                ("200", parent_page()),
+                truncated_transfer(),
+                truncated_transfer(),
+                truncated_transfer(),
+                self.query_response(),
+            ],
+            "xnxqh",
+            spring,
+            writer,
+        )
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["cache"]["stale_semesters"], [spring])
+        self.assertEqual(result["cache"]["refreshed_semesters"], [])
+        self.assertFalse(result["cache"]["stale_dictionary"])
+        # 春季的 200 间教室照样算进候选集，说明用的是那份未过期的缓存。
+        self.assertEqual(result["count"], len(names) - ORCH_IDLE_RANGE[1])
+        self.assertEqual(len(client.calls), 5)
+
+    def test_truncated_dictionary_list_keeps_an_unexpired_cache(self):
+        """字典名单被 maxRow 截断时不用该次响应，未过期的旧字典可以继续并标记 stale_dictionary。"""
+        self.prime_year()
+        new_names = orchestration_dictionary_names()
+        self.prime_dictionary(new_names[:1], self.expired_moment())
+
+        def writer():
+            """模拟另一个进程在这段时间把字典刷新好。"""
+            self.prime_dictionary(new_names)
+
+        client = CacheRefreshingClient(
+            [
+                ("200", parent_page()),
+                dictionary_body([{"jsid": "JSID-X", "jsmc": "格物楼101"}] * DICTIONARY_MAX_ROW),
+                self.query_response(),
+            ],
+            "maxRow",
+            str(DICTIONARY_MAX_ROW),
+            writer,
+        )
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["cache"]["stale_dictionary"])
+        # 教室全集来自那份未过期的字典：全年无课的教室数只能是新字典里的那几间。
+        self.assertEqual(result["excluded_year_round_idle_count"], ORCH_IDLE_RANGE[1])
+        self.assertEqual(result["count"], len(new_names) - ORCH_IDLE_RANGE[1])
+        self.assertEqual(len(client.calls), 3)
+
+    def test_semester_without_any_usable_cache_stops(self):
+        """某学期刷不出来又没有可用缓存时停下，说明全年无课名单不完整。"""
+        names = orchestration_dictionary_names()
+        client = self.fake_client(
+            ("200", parent_page()),
+            dictionary_body(self.dictionary_items(names)),
+            truncated_transfer(),
+            truncated_transfer(),
+            truncated_transfer(),
+        )
+        result = self.run_query(client)
+        self.assert_failure(result, "全年无课名单不完整")
+        # 秋季 3 次都断线后立刻停下，不再拉春季与夏季，也不发本次课表。
+        self.assertEqual(len(client.calls), 5)
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+
+    def test_expired_semester_cache_is_not_usable(self):
+        """某学期只有过期缓存、刷新又失败时停下：过期缓存不算可用。"""
+        rooms = orchestration_semester_rooms()
+        self.prime_dictionary(orchestration_dictionary_names())
+        self.prime_semester(SELECTED_SEMESTER, rooms[SELECTED_SEMESTER], self.expired_moment())
+        client = self.fake_client(
+            ("200", parent_page()),
+            truncated_transfer(),
+            truncated_transfer(),
+            truncated_transfer(),
+        )
+        result = self.run_query(client)
+        self.assert_failure(result, "全年无课名单不完整")
+        # 只发了父页与秋季的 3 次断线请求，过期缓存没被当成可用缓存继续用。
+        self.assertEqual(len(client.calls), 4)
+        kept = read_semester_cache(SELECTED_SEMESTER)
+        self.assertEqual(kept["room_count"], ORCH_AUTUMN_RANGE[1])
+
+    def test_expired_dictionary_is_not_usable_when_the_list_is_truncated(self):
+        """字典只有过期缓存、刷新又拿到截断名单时停下：过期缓存不算可用。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names()[:1], self.expired_moment())
+        client = self.fake_client(
+            ("200", parent_page()),
+            dictionary_body([{"jsid": "JSID-X", "jsmc": "格物楼101"}] * DICTIONARY_MAX_ROW),
+        )
+        result = self.run_query(client)
+        self.assert_failure(result, "截断")
+        # 字典这一步就停下，学期与本次课表都不再请求。
+        self.assertEqual(len(client.calls), 2)
+
+    def test_session_loss_stops_later_posts_and_keeps_validated_caches(self):
+        """拉学期中途变成登录页时停止后续 POST，已经写盘的秋季缓存保持原样。"""
+        rooms = orchestration_semester_rooms()
+        names = orchestration_dictionary_names()
+        client = self.fake_client(
+            ("200", parent_page()),
+            dictionary_body(self.dictionary_items(names)),
+            self.semester_response(rooms[SELECTED_SEMESTER]),
+            ("200", LOGIN_PAGE),
+        )
+        result = self.run_query(client)
+        self.assert_failure(result, "登录页", "重新登录")
+        # 秋季已经通过校验并写盘；春季拿到的登录页不写缓存，夏季与本次课表都不再请求。
+        self.assertEqual(len(client.calls), 4)
+        kept = read_semester_cache(SELECTED_SEMESTER)
+        self.assertEqual(kept["room_count"], ORCH_AUTUMN_RANGE[1])
+        self.assertIsNone(read_semester_cache("2026-2027-2"))
+        self.assertIsNone(read_semester_cache("2026-2027-3"))
+
+    def test_session_kick_on_the_query_page_fails_without_rooms(self):
+        """本次课表拿到互踢提示时失败且没有 rooms，缓存不受影响。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.fake_client(("200", parent_page()), ("200", SESSION_KICKED_PAGE))
+        result = self.run_query(client)
+        self.assert_failure(result, "互踢", "重新登录")
+        self.assertEqual(len(client.calls), 2)
+        kept = read_semester_cache("2026-2027-2")
+        self.assertEqual(kept["room_count"], ORCH_SPRING_RANGE[1])
+
+    def test_target_semester_outside_the_year_sends_no_post(self):
+        """父页里没有本学年学期时只读了一次父页，一个 POST 都不发。"""
+        client = self.fake_client(("200", parent_page(values=("2025-2026-1", "2025-2026-2"))))
+        result = self.run_query(client)
+        self.assert_failure(result, "无法使用该学期")
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["method"], "GET")
+
+    def test_target_semester_missing_from_the_year_list_sends_no_post(self):
+        """目标学期不在本学年下拉里时同样只读了一次父页。"""
+        client = self.fake_client(("200", parent_page(values=("2026-2027-2", "2026-2027-3"))))
+        result = self.run_query(client)
+        self.assert_failure(result, "无法使用该学期")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_invalid_parameters_send_no_request(self):
+        """大节起点不在块首这类参数失败一个请求都不发。"""
+        client = self.fake_client()
+        result = self.run_query(client, period_start="4", period_end="4")
+        self.assert_failure(result, "period_start=4")
+        self.assertEqual(client.calls, [])
+
+    def test_each_query_refreshes_its_resources_again(self):
+        """同一会话连续查两次：两次都重读父页并重发本次课表，说明每次都清了刷新记录。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.fake_client(
+            ("200", parent_page()),
+            self.query_response(),
+            ("200", parent_page()),
+            self.query_response(),
+        )
+        first = self.run_query(client)
+        second = self.run_query(client)
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual([call["method"] for call in client.calls], ["GET", "POST", "GET", "POST"])
+
+
+class ClassroomFailurePagePropertyTest(ClassroomOrchestrationTestCase):
+    """任务 11.2 / 设计 Correctness Properties 第 14 条：失败页不产生不上课教室。
+
+    固定种子 20261018：把全部「失败页 × 它不可用的位置」组合打乱后跑 20 轮，每种组合至少跑一次
+    （组合共 14 种，比轮数少）。断言结果都是失败、没有 rooms，失败页也没有被写进缓存，后面更不会
+    再有请求。
+    """
+
+    SEED = 20261018
+    ROUNDS = 20
+
+    def test_failure_pages_never_produce_rooms(self):
+        """登录页、非法访问、互踢、缺表、格数不是 35 落在可用位置上时都只得到失败结果。"""
+        cases = self.shuffled_cases(random.Random(self.SEED))
+        for round_index in range(self.ROUNDS):
+            name, page, position, attempts = cases[round_index % len(cases)]
+            with self.subTest(page=name, position=position, round_index=round_index):
+                self.assert_failure_page(page, position, attempts)
+
+    def shuffled_cases(self, generator):
+        """列出全部「失败页 × 它不可用的位置」组合并按固定种子打乱，保证每种都跑到。"""
+        cases = []
+        for name, page, positions, attempts in FAILURE_PAGE_SAMPLES:
+            for position in positions:
+                cases.append((name, page, position, attempts))
+        generator.shuffle(cases)
+        return cases
+
+    def assert_failure_page(self, page, position, attempts):
+        """把失败页放到指定位置跑一次编排，断言失败、没有 rooms，也没写进缓存。"""
+        client = self.failure_page_client(page, position, attempts)
+        result = self.run_query(client)
+        self.assertFalse(result["ok"])
+        self.assertNotIn("rooms", result)
+        self.assertTrue(result["error"])
+        self.assertTrue(result["hint"])
+        # 失败页不能变成这个学期的教室名缓存。
+        if position == SEMESTER_POSITION:
+            self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+        # 已经通过校验的学期缓存不会因为后面的失败页被删掉。
+        if position != PARENT_POSITION:
+            kept = read_semester_cache("2026-2027-2")
+            self.assertEqual(kept["room_count"], ORCH_SPRING_RANGE[1])
+        self.assertEqual(len(client.calls), self.expected_calls(position, attempts))
+
+    def failure_page_client(self, page, position, attempts):
+        """按插入位置拼响应队列与假客户端；每轮先清缓存，再把该位置之前的缓存准备好。"""
+        self.clear_caches()
+        pages = [("200", page)] * attempts
+        # 父页位置：父页 GET 直接拿到失败页，后面的请求都不该发生。
+        if position == PARENT_POSITION:
+            return self.fake_client(*pages)
+        self.prime_dictionary(orchestration_dictionary_names())
+        rooms = orchestration_semester_rooms()
+        # 学期位置：让秋季没有缓存，失败页就落在秋季那次 POST 上。
+        if position == SEMESTER_POSITION:
+            for semester in ("2026-2027-2", "2026-2027-3"):
+                self.prime_semester(semester, rooms[semester])
+            return self.fake_client(*([("200", parent_page())] + pages))
+        # 本次查询位置：本学年三个学期都用未过期缓存，失败页落在本次课表 POST 上。
+        for semester in EXPECTED_YEAR_SEMESTERS:
+            self.prime_semester(semester, rooms[semester])
+        return self.fake_client(*([("200", parent_page())] + pages))
+
+    def clear_caches(self):
+        """清掉缓存目录里的文件：同一用例跑多轮时每轮从同一个起点开始。"""
+        # 目录还没建出来时没有要清的文件。
+        if not os.path.isdir(self.cache_root):
+            return
+        for name in os.listdir(self.cache_root):
+            os.remove(os.path.join(self.cache_root, name))
+
+    def expected_calls(self, position, attempts):
+        """算这次应该发几次请求：父页位置只有失败页本身，另外两处要先读一次父页。"""
+        # 父页位置没有前置请求，另外两处都要先 GET 一次父页。
+        if position == PARENT_POSITION:
+            return attempts
+        return 1 + attempts
+
+
+if __name__ == "__main__":
+    unittest.main()
 if __name__ == "__main__":
     unittest.main()
