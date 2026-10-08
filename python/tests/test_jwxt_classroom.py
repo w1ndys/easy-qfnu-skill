@@ -27,6 +27,7 @@ from qfnu.jwxt_classroom import (
     GRID_CELL_COUNT,
     INCOMPLETE_TEXT,
     LIMITATION_TEXT,
+    LOCAL_CACHE_BAD_WARNING,
     MERGED_ROOM_WARNING,
     PERIOD_BLOCKS,
     ROOM_STATUS,
@@ -50,6 +51,7 @@ from qfnu.jwxt_classroom import (
     free_blocks_of_day,
     keyword_skjs,
     load_roster,
+    local_cache_semesters,
     normalize_room_name,
     now_moment,
     occupied_rooms,
@@ -61,10 +63,12 @@ from qfnu.jwxt_classroom import (
     query_blocks,
     query_empty_classrooms,
     query_form,
+    read_local_semester_rooms,
     read_semester_cache,
     reset_serial_refresh,
     room_free_info,
     room_occupancy_map,
+    room_universe_index,
     row_occupancy,
     selected_rooms,
     semester_cache_path,
@@ -1134,6 +1138,15 @@ class ClassroomCacheTestCase(unittest.TestCase):
         with open(path, "r", encoding="utf-8") as handle:
             return handle.read()
 
+    def write_raw_cache_file(self, file_name, text):
+        """往缓存目录写一段原文，用来造内容不合法的学期缓存与无关文件。"""
+        os.makedirs(self.cache_root, exist_ok=True)
+        path = os.path.join(self.cache_root, file_name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+
     def parsed_table(self, rows):
         """把 (教室名, 占用下标) 列表拼成课表并解析，返回解析结果。"""
         table = classroom_table([data_row(name, occupied) for name, occupied in rows])
@@ -2143,7 +2156,8 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
         self.assertIn(active, [room["name"] for room in result["rooms"]])
         self.assertNotIn(idle, [room["name"] for room in result["rooms"]])
-        self.assertEqual(result["excluded_year_round_idle_count"], 1)
+        # 排除计数 = 总表里全年无课的教室 + 只在本次响应里出现、因此没进候选集的教室。
+        self.assertEqual(result["excluded_year_round_idle_count"], 2)
 
     def test_room_scheduled_in_another_semester_is_kept(self):
         """目标学期没有该行、但本学年另一个完整学期有排课的教室留在候选集里。"""
@@ -2159,7 +2173,8 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         names = [room["name"] for room in result["rooms"]]
         self.assertIn(autumn_only, names)
         self.assertIn(spring_only, names)
-        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+        # 本学年两个完整学期的教室都进了候选集，计数只剩只在本次响应里出现的那间。
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
 
     def test_keyword_only_narrows_the_results(self):
         """关键词只缩小结果，不新增候选以外的教室。"""
@@ -2199,6 +2214,19 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         self.assertEqual(room["jsid"], "")
         self.assertEqual(room["source_names"], [rooms[0]])
         self.assertIn(MERGED_ROOM_WARNING + rooms[0], result["warnings"])
+
+    def test_rooms_with_a_unique_jsid_are_not_reported_as_merged(self):
+        """只有同名多条总表记录的教室才报「同名行已合并」，别的教室不该被误报。"""
+        rooms = self.target_rooms()
+        roster = self.roster_of([["AAA", rooms[0]], ["BBB", rooms[1]]])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        merged = [text for text in result["warnings"] if text.startswith(MERGED_ROOM_WARNING)]
+        merged = [text for text in result["warnings"] if text.startswith(MERGED_ROOM_WARNING)]
+        self.assertEqual(merged, [])
+        # 总表里唯一对应的两间教室仍带各自的 jsid；其余教室只来自课表，jsid 本来就为空。
+        self.assertEqual(self.room_of(result, rooms[0])["jsid"], "AAA")
+        self.assertEqual(self.room_of(result, rooms[1])["jsid"], "BBB")
 
     def test_unexpandable_names_only_show_up_in_warnings(self):
         """总表与课表里无法展开的原始名称只进 warnings，不成为结果行。"""
@@ -2245,8 +2273,9 @@ class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
         self.assertEqual(result["count"], len(autumn))
         self.assertNotIn(summer_room, [room["name"] for room in result["rooms"]])
         # 不完整夏季的教室不当候选，因此落在全年无课一侧：计数等于夏季名单的长度
-        # （总表里那间全年无课教室也在夏季名单里出现，两边并集后只算一次）。
-        self.assertEqual(result["excluded_year_round_idle_count"], len(summer))
+        # （总表里那间全年无课教室也在夏季名单里出现，两边并集后只算一次），再加上只在本次响应里
+        # 出现、同样没进候选集的那间教室。
+        self.assertEqual(result["excluded_year_round_idle_count"], len(summer) + 1)
 
     def test_complete_summer_room_enters_candidates(self):
         """夏季有 50 间且某教室出现在首格时，该教室进候选集。"""
@@ -2261,7 +2290,8 @@ class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
         self.assertTrue(result["ok"])
         self.assertIn(summer_room, [room["name"] for room in result["rooms"]])
         self.assertEqual(result["count"], len(autumn) + len(summer))
-        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+        # 只剩只在本次响应里出现的那间教室没进候选集。
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
 
     def test_no_complete_autumn_or_spring_stops_reversing(self):
         """本学年只有完整夏季时停止反推，说明全年无课判断缺少可用数据。"""
@@ -2827,6 +2857,11 @@ class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
             self.prime_semester(semester, rooms[semester])
         return rooms
 
+    def prime_past_year(self, rooms=None, fetched_at=None):
+        """把往期学年的学期缓存写好；默认时间戳是过期的，验证本地累计不限是否过期。"""
+        picked = past_year_rooms() if rooms is None else list(rooms)
+        return self.prime_semester(PAST_YEAR_SEMESTER, picked, fetched_at or self.expired_moment())
+
     def expired_moment(self):
         """取一个早于 7 日的时刻：用它的缓存算过期，编排会去刷新这个学期。"""
         return now_moment() - timedelta(days=CACHE_TTL_DAYS + 1)
@@ -2880,6 +2915,8 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
                     "record_count": len(names),
                     "room_count": len(names),
                 },
+                # 本次刷新写下了本学年三个学期的缓存文件，它们同时也是本地累计到的学期。
+                "observed_semesters": EXPECTED_YEAR_SEMESTERS,
             },
         )
         # 本学年没排过课的教室只给计数，当天有课的那间也要从结果里去掉。
@@ -2991,7 +3028,8 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         self.assertEqual(
             result["cache"]["roster"], {"captured_at": "", "record_count": 0, "room_count": 0}
         )
-        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+        # 全集只剩课表来源：本学年三个学期的教室都进了候选集，计数只剩本次响应里的那间教室。
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
         self.assertEqual(
             result["count"], sum(len(rooms[semester]) for semester in EXPECTED_YEAR_SEMESTERS)
         )
@@ -3184,6 +3222,287 @@ class ClassroomFailurePagePropertyTest(ClassroomOrchestrationTestCase):
         if position == PARENT_POSITION:
             return attempts
         return 1 + attempts
+
+
+# 本地累计用例的固定样本：往期学年的学期、只出现在缓存目录里的教室名范围，以及坏文件与无关文件。
+PAST_YEAR_SEMESTER = "2025-2026-1"
+PAST_YEAR_SPRING = "2025-2026-2"
+PAST_YEAR_RANGE = (801, 3)
+
+# 内容不合法的学期缓存样本：(学期, 失败原因, 文件内容)；三者都只能被跳过并各记一条警告。
+LOCAL_BAD_FILE_SAMPLES = (
+    ("2024-2025-2", "读不出或不是对象", "{"),
+    ("2024-2025-3", "rooms 不是数组", '{"semester": "2024-2025-3", "rooms": "格物楼901"}'),
+    (
+        "2023-2024-1",
+        "文件里的学期与文件名不一致",
+        '{"semester": "2023-2024-2", "rooms": ["格物楼902"]}',
+    ),
+)
+
+# 不算学期缓存的无关文件样本：(文件名, 文件内容)；里面的教室名同样不能进全集。
+LOCAL_IRRELEVANT_FILES = (
+    ("dictionary.json", '{"semester": "2025-2026-3", "rooms": ["格物楼903"]}'),
+    ("notes.txt", "随手写的笔记"),
+    ("2024-2025-9.json", '{"semester": "2024-2025-9", "rooms": ["格物楼904"]}'),
+    ("random.json", '{"rooms": ["格物楼905"]}'),
+)
+
+
+def past_year_rooms():
+    """往期学年累计到的教室名列表：这些教室不在内置总表里，本学年课表也没出现过。"""
+    start, count = PAST_YEAR_RANGE
+    return [reverse_room(number) for number in range(start, start + count)]
+
+
+class ClassroomLocalCacheReadTest(ClassroomCacheTestCase):
+    """任务 15.1 / 需求 2 的 AC 9、10：本地累计只认学期文件，坏文件跳过并记警告。"""
+
+    def test_reads_every_semester_file_sorted(self):
+        """缓存目录里每个合法的学期文件都读出来，按学期排序。"""
+        self.write_raw_cache_file(
+            "2025-2026-2.json", '{"semester": "2025-2026-2", "rooms": ["格物楼802"]}'
+        )
+        self.write_raw_cache_file(
+            "2024-2025-1.json", '{"semester": "2024-2025-1", "rooms": ["格物楼801"]}'
+        )
+        self.write_raw_cache_file(
+            PAST_YEAR_SEMESTER + ".json",
+            '{"semester": "2025-2026-1", "rooms": ["格物楼803"]}',
+        )
+        rooms, warnings = read_local_semester_rooms()
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            local_cache_semesters(), ["2024-2025-1", "2025-2026-1", "2025-2026-2"]
+        )
+        self.assertEqual(sorted(rooms), ["2024-2025-1", "2025-2026-1", "2025-2026-2"])
+        self.assertEqual(rooms[PAST_YEAR_SEMESTER], ["格物楼803"])
+
+    def test_missing_cache_directory_has_no_local_semesters(self):
+        """缓存目录还没建出来时没有本地累计，也不报错。"""
+        self.assertFalse(os.path.isdir(self.cache_root))
+        self.assertEqual(local_cache_semesters(), [])
+        self.assertEqual(read_local_semester_rooms(), ({}, []))
+
+    def test_bad_files_are_skipped_with_a_warning(self):
+        """读不出的、rooms 不是数组的、学期与文件名不一致的文件都跳过，各记一条警告。"""
+        for semester, _reason, text in LOCAL_BAD_FILE_SAMPLES:
+            self.write_raw_cache_file(semester + ".json", text)
+        rooms, warnings = read_local_semester_rooms()
+        self.assertEqual(rooms, {})
+        self.assertEqual(len(warnings), len(LOCAL_BAD_FILE_SAMPLES))
+        for semester, reason, _text in LOCAL_BAD_FILE_SAMPLES:
+            self.assertIn(LOCAL_CACHE_BAD_WARNING + semester + "（" + reason + "）", warnings)
+
+    def test_irrelevant_names_are_not_semester_caches(self):
+        """字典名、别的后缀、不合法的学期值与同名目录都不是学期缓存，静默跳过。"""
+        for file_name, text in LOCAL_IRRELEVANT_FILES:
+            self.write_raw_cache_file(file_name, text)
+        os.makedirs(os.path.join(self.cache_root, PAST_YEAR_SPRING + ".json"), exist_ok=True)
+        self.assertEqual(local_cache_semesters(), [])
+        self.assertEqual(read_local_semester_rooms(), ({}, []))
+
+    def test_expired_semester_file_still_counts(self):
+        """过期只表示该重新拉取：文件还在，教室名照样进本地累计。"""
+        payload = {
+            "semester": PAST_YEAR_SEMESTER,
+            "fetched_at": "2020-01-01T00:00:00+08:00",
+            "rooms": ["格物楼801"],
+        }
+        self.write_raw_cache_file(
+            PAST_YEAR_SEMESTER + ".json", json.dumps(payload, ensure_ascii=False)
+        )
+        self.assertEqual(
+            read_local_semester_rooms(), ({PAST_YEAR_SEMESTER: ["格物楼801"]}, [])
+        )
+
+
+class ClassroomLocalCumulativeTest(ClassroomOrchestrationTestCase):
+    """任务 15.1 / 需求 2 的 AC 9、10：本地累计只扩大全集，往期教室不进候选集与结果。"""
+
+    def run_full_scene(self, extra_files=()):
+        """跑一次缓存齐全的查询：本学年三个学期用未过期缓存，可另放缓存目录文件。"""
+        self.prime_year()
+        for file_name, text in extra_files:
+            self.write_raw_cache_file(file_name, text)
+        self.use_roster(orchestration_roster_names())
+        client = self.fake_client(("200", parent_page()), self.query_response())
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        return result
+
+    def test_observed_rooms_join_the_universe_without_jsid(self):
+        """本地累计到的教室进全集且 jsid 为空；总表里已有同名的教室不被覆盖。"""
+        roster = self.roster_of([["JSID-1", "格物楼101"]])
+        observed = {PAST_YEAR_SEMESTER: past_year_rooms() + ["格物楼101"]}
+        index = room_universe_index(roster, {}, observed)
+        # 总表里的教室保留自己的 jsid 与来源展示名，本地累计不覆盖它。
+        self.assertEqual(
+            index["格物楼101"], {"jsid": "JSID-1", "source_names": ["格物楼101"], "merged": False}
+        )
+        for name in past_year_rooms():
+            self.assertEqual(
+                index[name], {"jsid": "", "source_names": [name], "merged": False}
+            )
+
+    def result_names(self, result):
+        """取结果里的教室名列表，用来比较两次查询的结果集是否一样。"""
+        return [room["name"] for room in result["rooms"]]
+
+    def test_past_year_rooms_join_the_universe_only(self):
+        """往期教室进全集与全年无课计数，但不进候选集、也不出现在结果里。"""
+        before = self.run_full_scene()
+        self.prime_past_year()
+        after = self.run_full_scene()
+        self.assertEqual(self.result_names(after), self.result_names(before))
+        self.assertEqual(after["count"], before["count"])
+        self.assertNotIn(past_year_rooms()[0], self.result_names(after))
+        # 全集变大只体现在排除计数上：多出来的正是往期累计到的那几间教室。
+        self.assertEqual(
+            after["excluded_year_round_idle_count"],
+            before["excluded_year_round_idle_count"] + PAST_YEAR_RANGE[1],
+        )
+        self.assertIn(PAST_YEAR_SEMESTER, after["cache"]["observed_semesters"])
+
+    def test_keyword_cannot_pull_in_past_year_rooms(self):
+        """关键词只在候选集里筛：往期累计到的教室即使命中关键词也不进结果。"""
+        self.prime_past_year()
+        self.prime_year()
+        self.use_roster(orchestration_roster_names())
+        client = self.fake_client(("200", parent_page()), self.query_response())
+        result = self.run_query(client, keyword="格物楼8")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rooms"], [])
+        self.assertEqual(result["count"], 0)
+        # 这些教室确实在全集里，只是进不了候选集。
+        self.assertGreater(result["excluded_year_round_idle_count"], 0)
+
+    def test_response_only_room_joins_the_universe(self):
+        """只在本次响应里出现的教室进全集与排除计数，但不进候选集与结果（全集第三来源）。"""
+        self.prime_year()
+        self.use_roster(orchestration_roster_names())
+        client = self.fake_client(("200", parent_page()), self.query_response())
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        # 排除计数 = 总表里全年无课的教室 + 本次响应里的那间教室；两者都不在候选集里。
+        self.assertEqual(result["excluded_year_round_idle_count"], ORCH_IDLE_RANGE[1] + 1)
+        self.assertNotIn(ORCH_SPARE_ROOM, self.result_names(result))
+
+    def test_observed_semesters_lists_every_local_semester_sorted(self):
+        """observed_semesters 列出缓存目录里全部学期，排序去重。"""
+        self.prime_past_year()
+        self.prime_semester(
+            PAST_YEAR_SPRING, [reverse_room(PAST_YEAR_RANGE[0] + 10)], self.expired_moment()
+        )
+        result = self.run_full_scene()
+        observed = result["cache"]["observed_semesters"]
+        self.assertEqual(observed, [PAST_YEAR_SEMESTER, PAST_YEAR_SPRING] + EXPECTED_YEAR_SEMESTERS)
+        self.assertEqual(observed, sorted(set(observed)))
+
+    def test_bad_and_irrelevant_files_are_ignored_with_warnings(self):
+        """坏文件与无关文件都不进全集，只进 warnings，查询照旧成功。"""
+        before = self.run_full_scene()
+        extra = [(semester + ".json", text) for semester, _reason, text in LOCAL_BAD_FILE_SAMPLES]
+        extra.extend(LOCAL_IRRELEVANT_FILES)
+        after = self.run_full_scene(extra)
+        self.assertEqual(self.result_names(after), self.result_names(before))
+        # 排除计数不变说明坏文件里的教室名一个都没进全集。
+        self.assertEqual(
+            after["excluded_year_round_idle_count"], before["excluded_year_round_idle_count"]
+        )
+        self.assertEqual(after["cache"]["observed_semesters"], EXPECTED_YEAR_SEMESTERS)
+        warning_text = " ".join(after["warnings"])
+        for semester, reason, _text in LOCAL_BAD_FILE_SAMPLES:
+            self.assertIn(LOCAL_CACHE_BAD_WARNING + semester + "（" + reason + "）", warning_text)
+
+    def test_expired_local_cache_files_are_kept(self):
+        """过期只触发重新拉取，学期缓存文件不删：往期累计不会因为过期丢失。"""
+        self.prime_past_year()
+        path = semester_cache_path(PAST_YEAR_SEMESTER)
+        before = self.read_file(path)
+        result = self.run_full_scene()
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(self.read_file(path), before)
+        self.assertIn(PAST_YEAR_SEMESTER, result["cache"]["observed_semesters"])
+
+
+class ClassroomRosterIndependenceTest(ClassroomOrchestrationTestCase):
+    """任务 15.2 / 需求 2 的 AC 11–13：快照缺失或损坏时结果集与有快照时完全一致。"""
+
+    def corrupt_roster(self):
+        """把总表文件写成读不出的内容：全集只能靠本地累计与本次响应。"""
+        path = os.path.join(self.temp.name, "corrupt-" + ROSTER_FILE_NAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{")
+        self.point_roster_at(path)
+        return path
+
+    def snapshot_scene(self, roster_names, corrupt=False):
+        """按指定快照状态跑一次查询：缓存都齐，本次响应含一行占用与一间只出现在响应里的教室。"""
+        self.prime_year()
+        self.prime_past_year()
+        # corrupt 表示文件内容不合法，roster_names 为 None 表示文件整份缺失。
+        if corrupt:
+            self.corrupt_roster()
+        elif roster_names is None:
+            self.without_roster()
+        else:
+            self.use_roster(roster_names)
+        occupied = orchestration_semester_rooms()[SELECTED_SEMESTER][0]
+        rows = [
+            (occupied, {block_cell_index(ORCH_WEEKDAY, ORCH_BLOCK)}),
+            (ORCH_SPARE_ROOM, set()),
+        ]
+        client = self.fake_client(("200", parent_page()), self.query_response(rows))
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        return result
+
+    def without_jsid(self, rooms):
+        """去掉 jsid 后取教室记录：jsid 只来自快照，比的是其余字段是否完全一致。"""
+        return [{key: value for key, value in room.items() if key != "jsid"} for room in rooms]
+
+    def assert_same_result_set(self, first, second):
+        """断言两份结果的教室记录（除 jsid 外）与数量完全一致。"""
+        self.assertEqual(self.without_jsid(first["rooms"]), self.without_jsid(second["rooms"]))
+        self.assertEqual(first["count"], second["count"])
+
+    def test_missing_roster_keeps_the_result_set(self):
+        """快照缺失时只用本地累计与本次响应，结果集与有快照时完全一致。"""
+        with_roster = self.snapshot_scene(orchestration_roster_names())
+        without = self.snapshot_scene(None)
+        self.assert_same_result_set(with_roster, without)
+        # 差异只能落在 jsid 与全年无课计数上：快照不在了，教室身份与计数基线都没有了。
+        self.assertTrue(any(room["jsid"] for room in with_roster["rooms"]))
+        for room in without["rooms"]:
+            self.assertEqual(room["jsid"], "")
+        self.assertNotEqual(
+            without["excluded_year_round_idle_count"],
+            with_roster["excluded_year_round_idle_count"],
+        )
+        self.assertIn(ROSTER_UNAVAILABLE_WARNING, " ".join(without["warnings"]))
+
+    def test_corrupt_roster_behaves_like_a_missing_one(self):
+        """快照内容读不出时与缺失时一样：结果集不变，jsid 与全年无课计数不可用。"""
+        corrupt = self.snapshot_scene(None, corrupt=True)
+        missing = self.snapshot_scene(None)
+        self.assert_same_result_set(corrupt, missing)
+        self.assertEqual(
+            corrupt["cache"]["roster"], {"captured_at": "", "record_count": 0, "room_count": 0}
+        )
+        warning_text = " ".join(corrupt["warnings"])
+        self.assertIn(ROSTER_UNAVAILABLE_WARNING, warning_text)
+        self.assertIn("jsid", warning_text)
+
+    def test_roster_out_of_sync_does_not_change_the_result_set(self):
+        """快照与当前学期不同步时结果集不变：它的教室只进全年无课计数。"""
+        stale = self.snapshot_scene(["格物楼951", "格物楼952"])
+        missing = self.snapshot_scene(None)
+        self.assert_same_result_set(stale, missing)
+        self.assertEqual(
+            stale["excluded_year_round_idle_count"],
+            missing["excluded_year_round_idle_count"] + 2,
+        )
 
 
 
