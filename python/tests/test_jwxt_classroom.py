@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
-from qfnu import jwxt
+from qfnu import jwxt, jwxt_classroom
 from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_classroom import (
     BLOCK_NOTE_TEXT,
@@ -18,50 +18,49 @@ from qfnu.jwxt_classroom import (
     CACHE_ENV_VAR,
     CACHE_TIMEZONE,
     CACHE_TTL_DAYS,
-    CLASSROOM_DICTIONARY_URL,
     CLASSROOM_IFR_URL,
     CLASSROOM_PAGE_URL,
     CLASSROOM_USER_AGENT,
-    DICTIONARY_MAX_ROW,
     FETCH_ATTEMPTS,
     FREE_SWITCHES,
     GRID_BLOCK_NAMES,
     GRID_CELL_COUNT,
+    INCOMPLETE_TEXT,
     LIMITATION_TEXT,
     MERGED_ROOM_WARNING,
     PERIOD_BLOCKS,
     ROOM_STATUS,
     ROOM_STATUS_TEXT,
+    ROSTER_FILE_NAME,
+    ROSTER_PATH,
+    ROSTER_UNAVAILABLE_WARNING,
     any_occupied,
     block_bounds_error,
     cache_dir,
     cache_expired,
     candidate_rooms,
-    dictionary_cache_path,
-    dictionary_form,
     dictionary_room_index,
     empty_classroom_result,
     expand_record,
     expand_room_name,
-    fetch_dictionary,
     fetch_parent_page,
     fetch_query_page,
     fetch_semester_page,
     filter_free_rooms,
     free_blocks_of_day,
     keyword_skjs,
+    load_roster,
     normalize_room_name,
     now_moment,
     occupied_rooms,
     parse_academic_year,
     parse_classroom_page,
     parse_classroom_table,
-    parse_dictionary,
+    parse_roster,
     parse_semester,
     query_blocks,
     query_empty_classrooms,
     query_form,
-    read_dictionary_cache,
     read_semester_cache,
     reset_serial_refresh,
     room_free_info,
@@ -74,7 +73,6 @@ from qfnu.jwxt_classroom import (
     semester_form,
     serial_lock,
     validate_query,
-    write_dictionary_cache,
     write_semester_cache,
     write_semester_cache_from_page,
     year_round_idle_rooms,
@@ -396,7 +394,7 @@ class ClassroomBlockRangeTest(unittest.TestCase):
 
 
 class ClassroomRoomExpansionTest(unittest.TestCase):
-    """任务 2.1：合称展开，供字典 jsmc 与课表行首名称共用。"""
+    """任务 2.1：合称展开，供总表 jsmc 与课表行首名称共用。"""
 
     def rooms_of(self, name):
         """取展开出的单体教室，并断言这次展开成功。"""
@@ -479,7 +477,6 @@ PARENT_TITLE = "全校性教室课表"
 # 父页样本里的节次模式 ID：故意不用文档里的样本值，用来断言解析不写死样本 ID。
 PARENT_MODE_ID = "3F1C9A5E7B20468D"
 
-# 字典请求的 maxRow 直接用模块常量 DICTIONARY_MAX_ROW，截断判据按它比较。
 
 # 表头第 1 格原文，与设计里的「教室\节次」一致。
 HEADER_FIRST_CELL_TEXT = "教室\\节次"
@@ -664,80 +661,167 @@ class ClassroomParentPageTest(unittest.TestCase):
         self.assert_rejected(error, "互踢")
 
 
-class ClassroomDictionaryTest(unittest.TestCase):
-    """任务 5.2：字典只收 jsid 与 jsmc，截断与残缺名单不得当全集。"""
+class ClassroomRosterTest(unittest.TestCase):
+    """任务 14.1 / 需求 2.1、2.2：内置教室总表加载、往返与降级。"""
 
-    def records(self, raw_list, max_row=DICTIONARY_MAX_ROW):
-        """解析一份字典 JSON 并断言成功，返回字典。"""
-        text = json.dumps({"result": True, "list": raw_list})
-        dictionary, error = parse_dictionary(text, max_row)
-        self.assertIsNone(error)
-        return dictionary
+    # 快照的抓取时间，与随仓库分发的数据文件口径一致。
+    CAPTURED_AT = "2026-10-08T15:14:00+08:00"
 
-    def assert_rejected(self, error, text):
-        """断言这次字典被拒绝，错误里点出原因且不含 rooms。"""
-        self.assertIsNotNone(error)
-        self.assertFalse(error["ok"])
-        self.assertIn(text, error["error"])
-        self.assertNotIn("rooms", error)
+    def setUp(self):
+        """把总表写到临时目录的文件里，绝不读仓库外的路径。"""
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.roster_path = os.path.join(self.temp.name, ROSTER_FILE_NAME)
 
-    def test_dictionary_keeps_only_jsid_and_jsmc(self):
-        """记录只留 jsid 与 jsmc，其他响应字段不进字典。"""
-        items = [{"jsid": "JSID-1", "jsmc": "格物楼B101", "jsbh": "不该出现", "jszt": "1"}]
-        dictionary = self.records(items)
-        self.assertEqual(dictionary["max_row"], DICTIONARY_MAX_ROW)
-        record = dictionary["records"][0]
-        self.assertEqual(record["jsid"], "JSID-1")
-        self.assertEqual(record["jsmc"], "格物楼B101")
-        self.assertEqual(record["rooms"], ["格物楼B101"])
-        self.assertEqual(sorted(record), ["expanded", "jsid", "jsmc", "rooms", "source_jsid"])
+    def write_roster(self, payload):
+        """把快照对象写成总表文件，返回文件路径。"""
+        with open(self.roster_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return self.roster_path
 
-    def test_dictionary_list_equal_to_max_row_is_rejected(self):
-        """list 长度等于 maxRow 说明名单被截断，不能当全集。"""
-        items = []
-        for index in range(3):
-            items.append({"jsid": "JSID-" + str(index), "jsmc": "格物楼B10" + str(index)})
-        text = json.dumps({"result": True, "list": items})
-        dictionary, error = parse_dictionary(text, 3)
-        self.assertIsNone(dictionary)
-        self.assert_rejected(error, "maxRow")
+    def snapshot(self, rooms, **overrides):
+        """拼一份快照对象：默认字段与随仓库分发的数据文件一致。"""
+        payload = {
+            "source": "/jsxsd/kbcx/queryJs2",
+            "captured_at": self.CAPTURED_AT,
+            "max_row": 5000,
+            "count": len(rooms),
+            "rooms": list(rooms),
+        }
+        payload.update(overrides)
+        return payload
 
-    def test_dictionary_result_not_true_is_rejected(self):
-        """result 不是 true 时这次请求没有拿到名单。"""
-        text = json.dumps({"result": False, "list": []})
-        dictionary, error = parse_dictionary(text, DICTIONARY_MAX_ROW)
-        self.assertIsNone(dictionary)
-        self.assert_rejected(error, "result")
+    def degraded_roster(self, payload):
+        """把一份不可用的快照写成文件再加载，返回加载结果。"""
+        return load_roster(self.write_roster(payload))
 
-    def test_dictionary_invalid_json_is_rejected(self):
-        """响应不是 JSON（例如拿回登录页）时不能当名单。"""
-        dictionary, error = parse_dictionary("<html>请输入账号</html>", DICTIONARY_MAX_ROW)
-        self.assertIsNone(dictionary)
-        self.assert_rejected(error, "JSON")
+    def assert_unavailable(self, roster, text=""):
+        """断言总表不可用：空记录集加一条警告，查询照常能继续。"""
+        self.assertEqual(roster["records"], [])
+        self.assertEqual(dictionary_room_index(roster), {})
+        self.assertEqual(len(roster["warnings"]), 1)
+        self.assertIn(ROSTER_UNAVAILABLE_WARNING, roster["warnings"][0])
+        # 有具体原因时警告里要带上它，用户才知道是哪一步读不出来。
+        if text:
+            self.assertIn(text, roster["warnings"][0])
 
-    def test_dictionary_record_without_jsid_is_skipped(self):
-        """缺 jsid 或 jsmc 的记录跳过并记警告。"""
-        items = [{"jsmc": "格物楼B101"}, {"jsid": "JSID-2", "jsmc": "数学楼401"}]
-        dictionary = self.records(items)
-        self.assertEqual(len(dictionary["records"]), 1)
-        self.assertEqual(dictionary["records"][0]["jsid"], "JSID-2")
-        self.assertTrue(dictionary["warnings"])
+    def test_roster_round_trip_keeps_jsid_and_jsmc(self):
+        """正常往返：jsid 与 jsmc 逐条对齐，记录数与文件一致。"""
+        rooms = [["JSID-1", "格物楼B101"], ["JSID-2", "数学楼401、403"], ["JSID-3", "化学楼506"]]
+        roster = load_roster(self.write_roster(self.snapshot(rooms)))
+        self.assertEqual(roster["warnings"], [])
+        self.assertEqual(roster["max_row"], 5000)
+        self.assertEqual(roster["captured_at"], self.CAPTURED_AT)
+        self.assertEqual(
+            [record["jsid"] for record in roster["records"]], ["JSID-1", "JSID-2", "JSID-3"]
+        )
+        self.assertEqual(
+            [record["jsmc"] for record in roster["records"]],
+            ["格物楼B101", "数学楼401、403", "化学楼506"],
+        )
+        self.assertEqual(len(roster["records"]), len(rooms))
+        # 合称记录展开成两间教室，但 jsid 只记在 source_jsid 上。
+        self.assertEqual(roster["records"][1]["rooms"], ["数学楼401", "数学楼403"])
+        self.assertEqual(roster["records"][1]["source_jsid"], "JSID-2")
+        self.assertEqual(len(dictionary_room_index(roster)), 4)
 
-    def test_dictionary_unexpandable_name_stays_with_warning(self):
-        """展开不出房号的展示名仍留在字典里，但要记警告。"""
-        dictionary = self.records([{"jsid": "JSID-3", "jsmc": "演播厅"}])
-        self.assertEqual(dictionary["records"][0]["rooms"], [])
-        self.assertIn("演播厅", " ".join(dictionary["warnings"]))
+    def test_roster_is_a_local_bundled_file(self):
+        """内置总表是随模块分发的本地文件，不是要请求的上游地址。"""
+        self.assertEqual(os.path.basename(ROSTER_PATH), ROSTER_FILE_NAME)
+        self.assertFalse(ROSTER_PATH.startswith("http"))
+        self.assertTrue(os.path.exists(ROSTER_PATH))
 
-    def test_dictionary_composite_record_keeps_one_source_jsid(self):
-        """合称记录只记一个 source_jsid，不按展开出的教室拆成多条。"""
-        dictionary = self.records([{"jsid": "DB3511C3DF574E3A", "jsmc": "数学楼401、403"}])
-        self.assertEqual(len(dictionary["records"]), 1)
-        record = dictionary["records"][0]
-        self.assertEqual(record["rooms"], ["数学楼401", "数学楼403"])
+    def test_shipped_roster_file_loads_every_record(self):
+        """随仓库分发的那份数据文件能整份加载，逐条与文件里的房间列表对齐。"""
+        with open(ROSTER_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        roster = load_roster(ROSTER_PATH)
+        self.assertEqual(len(roster["records"]), payload["count"])
+        self.assertEqual(len(roster["records"]), len(payload["rooms"]))
+        self.assertEqual(
+            [record["jsid"] for record in roster["records"]], [room[0] for room in payload["rooms"]]
+        )
+        self.assertEqual(
+            [record["jsmc"] for record in roster["records"]], [room[1] for room in payload["rooms"]]
+        )
+        self.assertEqual(roster["captured_at"], payload["captured_at"])
+        # 快照里本来就有取不出房号的展示名，它们只能出现在警告里。
+        self.assertTrue(roster["warnings"])
+        for text in roster["warnings"]:
+            self.assertIn("不进不上课结果", text)
+        self.assertTrue(dictionary_room_index(roster))
+
+    def test_shipped_roster_file_keeps_only_room_names(self):
+        """数据文件里只有 jsid 与 jsmc，没有姓名、学号、Cookie 或账号字段。"""
+        with open(ROSTER_PATH, "r", encoding="utf-8") as handle:
+            body = handle.read()
+        forbidden_fields = ("cookie", "Cookie", "JSESSIONID", "password", "encoded", "姓名", "学号", "账号")
+        for forbidden in forbidden_fields:
+            self.assertNotIn(forbidden, body)
+        # 文件确实读对了：第一间教室的 jsid 与展示名都在里面。
+        self.assertIn("0001", body)
+        self.assertIn("JY508", body)
+
+    def test_missing_file_returns_empty_roster(self):
+        """文件缺失时返回空记录集与一条警告，不抛异常。"""
+        self.assert_unavailable(load_roster(os.path.join(self.temp.name, "not-there.json")))
+
+    def test_invalid_json_returns_empty_roster(self):
+        """JSON 不合法时返回空记录集与一条警告。"""
+        with open(self.roster_path, "w", encoding="utf-8") as handle:
+            handle.write("{ 这不是 JSON")
+        self.assert_unavailable(load_roster(self.roster_path), "不是合法 JSON")
+
+    def test_payload_that_is_not_an_object_returns_empty_roster(self):
+        """顶层不是对象时返回空记录集与一条警告。"""
+        self.assert_unavailable(self.degraded_roster(["JSID-1"]), "顶层不是对象")
+
+    def test_rooms_that_are_not_a_list_returns_empty_roster(self):
+        """rooms 不是数组时返回空记录集与一条警告。"""
+        payload = self.snapshot([])
+        payload["rooms"] = {"JSID-1": "格物楼B101"}
+        self.assert_unavailable(self.degraded_roster(payload), "rooms 不是数组")
+
+    def test_items_that_are_not_pairs_return_empty_roster(self):
+        """条目不是 [jsid, jsmc] 两元数组时整份快照不可用，不能只跳过坏条目。"""
+        samples = ([["JSID-1"]], [["JSID-1", "格物楼B101", "多余"]], [{"jsid": "JSID-1", "jsmc": "X"}])
+        for rooms in samples:
+            with self.subTest(rooms=rooms):
+                self.assert_unavailable(self.degraded_roster(self.snapshot(rooms)), "不是两元数组")
+
+    def test_composite_record_keeps_one_source_jsid(self):
+        """合称记录的 jsid 只记在 source_jsid 上，不拆成两个 ID。"""
+        rooms = [["DB3511C3DF574E3A", "数学楼401、403"]]
+        roster = load_roster(self.write_roster(self.snapshot(rooms)))
+        self.assertEqual(len(roster["records"]), 1)
+        record = roster["records"][0]
+        self.assertEqual(record["jsid"], "DB3511C3DF574E3A")
         self.assertEqual(record["source_jsid"], "DB3511C3DF574E3A")
-        self.assertEqual(record["jsid"], record["source_jsid"])
+        self.assertEqual(record["rooms"], ["数学楼401", "数学楼403"])
 
+    def test_unexpandable_name_stays_with_warning(self):
+        """展开失败的展示名只进 warnings，不产生单体教室。"""
+        rooms = [["JSID-1", "格物楼B101"], ["JSID-2", "演播厅"]]
+        roster = load_roster(self.write_roster(self.snapshot(rooms)))
+        self.assertEqual(len(roster["records"]), 2)
+        self.assertEqual(roster["records"][1]["rooms"], [])
+        self.assertFalse(roster["records"][1]["expanded"])
+        self.assertIn("演播厅", " ".join(roster["warnings"]))
+        self.assertNotIn("演播厅", dictionary_room_index(roster))
+
+    def test_item_without_jsid_is_skipped_with_warning(self):
+        """两元数组里缺 jsid 或 jsmc 的条目跳过，其余记录照常展开。"""
+        rooms = [["", "格物楼B101"], ["JSID-2", "化学楼506"]]
+        roster = load_roster(self.write_roster(self.snapshot(rooms)))
+        self.assertEqual([record["jsid"] for record in roster["records"]], ["JSID-2"])
+        self.assertTrue(roster["warnings"])
+
+    def test_unreadable_max_row_is_recorded_as_zero(self):
+        """max_row 只作记录：读不出整数时记 0，不影响加载结果。"""
+        payload = self.snapshot([["JSID-1", "格物楼B101"]], max_row="5000")
+        roster = load_roster(self.write_roster(payload))
+        self.assertEqual(roster["max_row"], 0)
+        self.assertEqual(len(roster["records"]), 1)
 
 class ClassroomGridTest(unittest.TestCase):
     """任务 5.3：占用位与网格守卫。"""
@@ -949,23 +1033,21 @@ class ClassroomCompositeSharingTest(unittest.TestCase):
                 self.assertEqual(first_free, free_blocks_of_day(row["occupancy"], weekday))
                 self.assertEqual(free_blocks_of_day(lookup[rooms[1]], weekday), first_free)
 
-    def test_dictionary_composite_record_keeps_one_source_jsid(self):
-        """合称字典记录只留一个 source_jsid，不按展开出的教室拆成多条记录。"""
+    def test_roster_composite_record_keeps_one_source_jsid(self):
+        """合称总表记录只留一个 source_jsid，不按展开出的教室拆成多条记录。"""
         generator = random.Random(self.SEED)
-        items = []
+        rooms = []
         expected_rooms = []
         for index in range(self.ROUNDS):
-            name, rooms = self.random_composite(generator)
-            items.append({"jsid": "JSID-" + str(index), "jsmc": name})
-            expected_rooms.append(rooms)
-        text = json.dumps({"result": True, "list": items})
-        dictionary, error = parse_dictionary(text, DICTIONARY_MAX_ROW)
-        self.assertIsNone(error)
-        self.assertEqual(len(dictionary["records"]), len(items))
-        for item, rooms, record in zip(items, expected_rooms, dictionary["records"]):
-            self.assertEqual(record["rooms"], rooms)
-            self.assertEqual(record["jsid"], item["jsid"])
-            self.assertEqual(record["source_jsid"], item["jsid"])
+            name, expanded = self.random_composite(generator)
+            rooms.append(["JSID-" + str(index), name])
+            expected_rooms.append(expanded)
+        roster = parse_roster({"rooms": rooms})
+        self.assertEqual(len(roster["records"]), len(rooms))
+        for room, expanded, record in zip(rooms, expected_rooms, roster["records"]):
+            self.assertEqual(record["rooms"], expanded)
+            self.assertEqual(record["jsid"], room[0])
+            self.assertEqual(record["source_jsid"], room[0])
 
 
 class ClassroomFailurePageTest(unittest.TestCase):
@@ -1059,19 +1141,17 @@ class ClassroomCacheTestCase(unittest.TestCase):
         self.assertIsNone(error)
         return parsed
 
-    def dictionary_of(self, items):
-        """把字典记录拼成 queryJs2 响应并解析，返回字典。"""
-        dictionary, error = parse_dictionary(json.dumps({"result": True, "list": items}), DICTIONARY_MAX_ROW)
-        self.assertIsNone(error)
-        return dictionary
+    def roster_of(self, rooms):
+        """把 [jsid, jsmc] 两元数组拼成总表快照并解析，返回展开后的记录集合。"""
+        payload = {"max_row": 5000, "captured_at": CACHE_WRITTEN_TEXT, "rooms": list(rooms)}
+        return parse_roster(payload)
 
 
 class ClassroomCacheRoundTripTest(ClassroomCacheTestCase):
-    """任务 6.1 / 需求 6.6：写入后再读 jsid 与教室名一致，文件里没有 Cookie 与单元格内容。"""
+    """任务 6.1 / 需求 6.6：写入后再读教室名一致，文件里没有 Cookie 与单元格内容。"""
 
     def test_cache_env_var_moves_the_directory(self):
-        """QFNU_CLASSROOM_CACHE_PATH 改的是目录：两个文件名仍由本模块决定。"""
-        self.assertEqual(dictionary_cache_path(), os.path.join(self.cache_root, "dictionary.json"))
+        """QFNU_CLASSROOM_CACHE_PATH 改的是目录：学期文件名仍由本模块决定。"""
         self.assertEqual(
             semester_cache_path(SELECTED_SEMESTER),
             os.path.join(self.cache_root, SELECTED_SEMESTER + ".json"),
@@ -1081,53 +1161,6 @@ class ClassroomCacheRoundTripTest(ClassroomCacheTestCase):
         """没给环境变量时缓存目录是状态目录下的 classroom-schedule。"""
         os.environ.pop(CACHE_ENV_VAR, None)
         self.assertEqual(cache_dir(), os.path.join(state_dir(), CACHE_DIR_NAME))
-
-    def test_dictionary_round_trip_keeps_jsid_and_room_names(self):
-        """写入后再读，每条记录的 jsid、jsmc 与展开出的教室名一致。"""
-        items = [
-            {"jsid": "DB3511C3DF574E3A8F75F7611C5EAE3B", "jsmc": "格物楼B101"},
-            {"jsid": "JSID-2", "jsmc": "数学楼401、403"},
-        ]
-        written = write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
-        read_back = read_dictionary_cache()
-        self.assertEqual(read_back, written)
-        self.assertEqual(sorted(read_back), ["fetched_at", "max_row", "record_count", "records", "room_count"])
-        self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
-        self.assertEqual(read_back["max_row"], DICTIONARY_MAX_ROW)
-        self.assertEqual(read_back["record_count"], 2)
-        self.assertEqual(read_back["room_count"], 3)
-        self.assertEqual(
-            [record["jsid"] for record in read_back["records"]],
-            ["DB3511C3DF574E3A8F75F7611C5EAE3B", "JSID-2"],
-        )
-        self.assertEqual(
-            [record["jsmc"] for record in read_back["records"]],
-            ["格物楼B101", "数学楼401、403"],
-        )
-        self.assertEqual(
-            [record["rooms"] for record in read_back["records"]],
-            [["格物楼B101"], ["数学楼401", "数学楼403"]],
-        )
-        self.assertEqual(sorted(read_back["records"][0]), ["jsid", "jsmc", "rooms"])
-
-    def test_dictionary_cache_file_keeps_no_cookie_and_no_cell_content(self):
-        """字典缓存文件里没有 Cookie、encoded、账号密码，也没有单元格内容。"""
-        items = [
-            {
-                "jsid": "JSID-1",
-                "jsmc": "格物楼B101",
-                "cookie": "JSESSIONID=SECRET",
-                "encoded": "SECRET",
-                "password": "SECRET",
-            },
-            {"jsid": "JSID-2", "jsmc": "数学楼401、403", "kbcontent": "课程甲"},
-        ]
-        write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
-        body = self.read_file(dictionary_cache_path())
-        for forbidden in ("JSESSIONID", "SECRET", "cookie", "Cookie", "encoded", "password", "kbcontent", "课程甲", "<td", "nobr"):
-            self.assertNotIn(forbidden, body)
-        # 文件确实写在这份缓存目录里，否则上面的断言会因读错文件而假通过。
-        self.assertIn("JSID-1", body)
 
     def test_semester_round_trip_keeps_only_room_names(self):
         """学期缓存只存教室名，行数与教室数按首格展开后的结果落。"""
@@ -1164,21 +1197,16 @@ class ClassroomCacheRoundTripTest(ClassroomCacheTestCase):
 
     def test_cache_missing_or_corrupt_reads_as_none(self):
         """缓存缺失、写坏、字段不全或学期对不上时都按没有缓存处理。"""
-        self.assertIsNone(read_dictionary_cache())
         self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
-        # 先写一份正常缓存，再逐种方式把它写坏。
-        write_dictionary_cache(self.dictionary_of([{"jsid": "JSID-1", "jsmc": "格物楼B101"}]), CACHE_WRITTEN_AT)
-        for broken in ("{", '{"max_row": 5000}', "[]"):
-            with open(dictionary_cache_path(), "w", encoding="utf-8") as handle:
-                handle.write(broken)
-            self.assertIsNone(read_dictionary_cache())
         parsed = self.parsed_table([("格物楼B101", set())])
         write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, parsed, CACHE_WRITTEN_AT)
         # 读另一个学期时文件里的 semester 对不上，不能把这份名单当作它的缓存。
         self.assertIsNone(read_semester_cache("2026-2027-2"))
-        with open(semester_cache_path(SELECTED_SEMESTER), "w", encoding="utf-8") as handle:
-            handle.write('{"semester": "2026-2027-1", "rooms": "格物楼B101"}')
-        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+        broken_bodies = ("{", '{"semester": "2026-2027-1"}', "[]", '{"semester": "2026-2027-1", "rooms": "x"}')
+        for broken in broken_bodies:
+            with open(semester_cache_path(SELECTED_SEMESTER), "w", encoding="utf-8") as handle:
+                handle.write(broken)
+            self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
 
 
 class ClassroomCacheExpiryTest(unittest.TestCase):
@@ -1278,33 +1306,14 @@ class ClassroomCacheWriteGuardTest(ClassroomCacheTestCase):
         for value in (None, "html", [], 3):
             with self.assertRaises(TypeError):
                 write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, value)
-            with self.assertRaises(TypeError):
-                write_dictionary_cache(value)
-        # 是对象但字段不全（缺 records 的写法）同样不是成功解析的结果。
-        with self.assertRaises(TypeError):
-            write_dictionary_cache({})
         self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
-        self.assertFalse(os.path.exists(dictionary_cache_path()))
 
     def test_writers_refuse_empty_parse_results(self):
-        """解析结果里没有数据行或一条记录都没有时同样不写缓存。"""
+        """解析结果里没有数据行时同样不写缓存。"""
         for value in ({}, {"rows": []}):
             with self.assertRaises(ValueError):
                 write_semester_cache(SELECTED_SEMESTER, PARENT_MODE_ID, value)
-        with self.assertRaises(ValueError):
-            write_dictionary_cache({"records": []})
         self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
-        self.assertFalse(os.path.exists(dictionary_cache_path()))
-
-    def test_truncated_dictionary_is_never_cached(self):
-        """list 长度等于 maxRow 的截断名单不能当全集，也不允许落盘。"""
-        items = [{"jsid": "JSID-1", "jsmc": "格物楼B101"}]
-        truncated, error = parse_dictionary(json.dumps({"result": True, "list": items}), 1)
-        self.assertIsNone(truncated)
-        self.assertIsNotNone(error)
-        with self.assertRaises(TypeError):
-            write_dictionary_cache(truncated)
-        self.assertFalse(os.path.exists(dictionary_cache_path()))
 
     def test_malformed_semester_has_no_cache_path_to_write(self):
         """学期格式不符时拼不出缓存文件名，写函数报错，也不在缓存目录里留下东西。"""
@@ -1317,17 +1326,13 @@ class ClassroomCacheWriteGuardTest(ClassroomCacheTestCase):
 
 
 class ClassroomCacheRoundTripPropertyTest(ClassroomCacheTestCase):
-    """任务 6.2 / 设计 Correctness Properties 第 13 条 / 需求 2.7、6.6：缓存往返保持字段不变。"""
+    """任务 6.2 / 设计 Correctness Properties 第 13 条 / 需求 2.7、6.6：学期缓存往返保持字段不变。"""
 
     # 固定种子让属性测试可复现。
     SEED = 20261012
 
-    # 轮数，覆盖多组随机 jsid、教室名与合称名。
+    # 轮数，覆盖多组随机教室名与合称名。
     ROUNDS = 20
-
-    def random_jsid(self, generator):
-        """随机生成一个形如教务返回的 32 位十六进制 jsid。"""
-        return format(generator.getrandbits(128), "032X")
 
     def random_room_name(self, generator, index):
         """随机拼一个能展开出房号的展示名：一半是合称，一半是单体名。"""
@@ -1339,28 +1344,6 @@ class ClassroomCacheRoundTripPropertyTest(ClassroomCacheTestCase):
             return building + str(number) + separator + str(number + generator.randint(1, 20))
         return building + str(number)
 
-    def test_dictionary_round_trip_keeps_every_jsid_and_room_name(self):
-        """字典往返后 jsid、jsmc 与展开出的教室名逐条一致。"""
-        generator = random.Random(self.SEED)
-        items = []
-        expected_ids = []
-        expected_names = []
-        expected_rooms = []
-        for index in range(self.ROUNDS):
-            jsid = self.random_jsid(generator)
-            name = self.random_room_name(generator, index)
-            items.append({"jsid": jsid, "jsmc": name})
-            expected_ids.append(jsid)
-            expected_names.append(name)
-            expected_rooms.append(expand_room_name(name)["rooms"])
-        write_dictionary_cache(self.dictionary_of(items), CACHE_WRITTEN_AT)
-        read_back = read_dictionary_cache()
-        self.assertIsNotNone(read_back)
-        self.assertEqual([record["jsid"] for record in read_back["records"]], expected_ids)
-        self.assertEqual([record["jsmc"] for record in read_back["records"]], expected_names)
-        self.assertEqual([record["rooms"] for record in read_back["records"]], expected_rooms)
-        self.assertEqual(read_back["record_count"], self.ROUNDS)
-        self.assertEqual(read_back["room_count"], sum(len(rooms) for rooms in expected_rooms))
 
     def test_semester_round_trip_keeps_every_room_name(self):
         """学期往返后教室名逐字一致，行数与教室数也对得上。"""
@@ -1379,7 +1362,6 @@ class ClassroomCacheRoundTripPropertyTest(ClassroomCacheTestCase):
         self.assertEqual(read_back["room_count"], len(expected))
         self.assertEqual(read_back["source_row_count"], len(rows))
         self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
-
 
 
 # 请求层用例：假客户端记录请求并按队列返回响应，不发任何真实网络请求。
@@ -1461,10 +1443,6 @@ def truncated_body():
     body = classroom_table([data_row("数学楼401", {0})])
     return "200", body[: body.index("</table>")]
 
-
-def dictionary_body(items):
-    """拼一份 queryJs2 响应。"""
-    return "200", json.dumps({"result": True, "list": list(items)})
 
 
 class ClassroomRequestTestCase(ClassroomCacheTestCase):
@@ -1552,11 +1530,6 @@ class ClassroomRequestFormTest(ClassroomRequestTestCase):
         self.assertEqual(form["kbjcmsid"], PARENT_MODE_ID)
         self.assertEqual(set(form), set(EMPTY_SEMESTER_FIELDS) | {"xnxqh", "kbjcmsid"})
 
-    def test_dictionary_form_asks_for_the_full_roster(self):
-        """字典 POST 固定空 skjs 与 maxRow=5000，不拿 skjsid 当过滤条件。"""
-        self.assertEqual(dictionary_form(), {"skjs": "", "maxRow": "5000"})
-        self.assertEqual(DICTIONARY_MAX_ROW, 5000)
-
     def test_query_request_sends_form_encoding_referer_and_desktop_ua(self):
         """本次查询是一条表单编码的 POST，带父页 Referer 与教室请求专用 UA。"""
         client = self.fake_client(self.table_response())
@@ -1592,18 +1565,14 @@ class ClassroomRequestFormTest(ClassroomRequestTestCase):
         self.assertNotIn("Content-Type", call["headers"])
         self.assertIsNone(call["body"])
 
-    def test_dictionary_request_sends_empty_skjs_and_max_row(self):
-        """字典 POST 的表单只有空 skjs 与 maxRow，Referer 是父页。"""
-        client = self.fake_client(dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}]))
-        dictionary, error = fetch_dictionary(client)
-        self.assertIsNone(error)
-        self.assertEqual(dictionary["records"][0]["jsmc"], "数学楼401")
-        call = client.calls[0]
-        self.assertEqual(call["url"], CLASSROOM_DICTIONARY_URL)
-        self.assertEqual(call["headers"]["Referer"], CLASSROOM_PAGE_URL)
-        fields = request_form_fields(call)
-        self.assertEqual(fields["skjs"], "")
-        self.assertEqual(fields["maxRow"], "5000")
+    def test_runtime_never_requests_the_classroom_dictionary(self):
+        """运行期只发父页与课表两条请求，不再请求教室字典接口 queryJs2。"""
+        client = self.fake_client(("200", parent_page()), self.table_response())
+        fetch_parent_page(client)
+        fetch_query_page(client, SELECTED_SEMESTER, PARENT_MODE_ID, "6", "9", 3)
+        for call in client.calls:
+            self.assertNotIn("queryJs2", call["url"])
+        self.assertEqual([call["url"] for call in client.calls], [CLASSROOM_PAGE_URL, CLASSROOM_IFR_URL])
 
     def test_semester_request_keeps_every_filter_field_empty(self):
         """学期教室名请求里 11 个过滤字段真发成空串，只有学期与节次模式有值。"""
@@ -1617,9 +1586,9 @@ class ClassroomRequestFormTest(ClassroomRequestTestCase):
         self.assertEqual(fields["xnxqh"], SELECTED_SEMESTER)
         self.assertEqual(fields["kbjcmsid"], PARENT_MODE_ID)
 
-    def test_three_urls_stay_on_the_student_side(self):
-        """三条请求都在 kbcx 路径下，没有 kbxx 路径段，也没有教师端 jsjy_ 前缀。"""
-        for url in (CLASSROOM_PAGE_URL, CLASSROOM_DICTIONARY_URL, CLASSROOM_IFR_URL):
+    def test_two_urls_stay_on_the_student_side(self):
+        """两条请求都在 kbcx 路径下，没有 kbxx 路径段，也没有教师端 jsjy_ 前缀。"""
+        for url in (CLASSROOM_PAGE_URL, CLASSROOM_IFR_URL):
             self.assertTrue(url.startswith(JWXT_BASE + "/jsxsd/"))
             segments = urlparse(url).path.split("/")
             self.assertIn(STUDENT_PATH_SEGMENT, segments)
@@ -1747,14 +1716,14 @@ class ClassroomKeywordSkjsPropertyTest(unittest.TestCase):
     # 轮数，覆盖精确名、楼名、展开后单体名与无关词。
     ROUNDS = 40
 
-    # 房号池，用来拼字典记录与关键词。
+    # 房号池，用来拼总表记录与关键词。
     NUMBER_POOL = (101, 103, 201, 305, 401, 403, 505, 708)
 
-    # 无关词池：字典里不存在，skjs 必须留空。
+    # 无关词池：总表里不存在，skjs 必须留空。
     UNRELATED_POOL = ("体育场", "图书馆", "食堂")
 
     def random_records(self, generator, size=3):
-        """随机造几条字典记录：一半是单体名，一半是合称名。"""
+        """随机造几条总表记录：一半是单体名，一半是合称名。"""
         records = []
         for index in range(size):
             building = generator.choice(BUILDING_POOL)
@@ -1778,7 +1747,7 @@ class ClassroomKeywordSkjsPropertyTest(unittest.TestCase):
         # 展开后的单体名：合称展开出来的一间，通常不是任何一条未展开 jsmc。
         if kind == 2:
             return generator.choice(expand_room_name(generator.choice(records)["jsmc"])["rooms"])
-        # 无关词：字典里不存在。
+        # 无关词：总表里不存在。
         return generator.choice(self.UNRELATED_POOL)
 
     def expected_skjs(self, keyword, records):
@@ -1798,14 +1767,14 @@ class ClassroomKeywordSkjsPropertyTest(unittest.TestCase):
             keyword = self.keyword_candidate(generator, records)
             written = keyword_skjs(keyword, records)
             self.assertEqual(written, self.expected_skjs(keyword, records))
-            # 写入的必须是字典里那条原文，不是展开后的单体教室名。
+            # 写入的必须是总表里那条原文，不是展开后的单体教室名。
             if written:
                 self.assertIn(written, [record["jsmc"] for record in records])
                 self.assertEqual(normalize_room_name(written), normalize_room_name(keyword))
 
 
 class ClassroomFetchRetryTest(ClassroomRequestTestCase):
-    """任务 8.4 / 需求 2.6 / 设计 Error Handling「分块传输中断」：丢弃正文，最多再请求 2 次。"""
+    """任务 8.4 / 需求 2.6：传输被掐断与正文不完整的正文都丢弃重发，最多再请求 2 次。"""
 
     def test_truncated_transfer_is_retried_and_then_succeeds(self):
         """第一次传输被掐断时丢掉这次正文，第二次拿到完整课表才写缓存。"""
@@ -1831,22 +1800,37 @@ class ClassroomFetchRetryTest(ClassroomRequestTestCase):
         self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
         self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
 
-    def test_unfinished_body_is_discarded_then_retried(self):
-        """正文没传完（缺闭合表格）时同样丢弃重试，成功那次才写缓存。"""
+    def test_incomplete_body_is_discarded_then_retried(self):
+        """正文缺闭合的 kbtable 时丢弃这次正文重发，第二次拿到完整课表才算成功。"""
         client = self.fake_client(truncated_body(), self.table_response())
         payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
         self.assertIsNone(error)
-        self.assertEqual(len(client.calls), 2)
         self.assertEqual(payload["rooms"], ["数学楼401"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
 
-    def test_three_unfinished_bodies_fail_without_writing_cache(self):
-        """三次都只拿到残缺正文时按刷新失败处理，缓存里没有这个学期。"""
+    def test_three_incomplete_bodies_fail_as_an_incomplete_response(self):
+        """三次都只拿到不完整的课表时按「响应不完整」失败，不说成接口契约变了。"""
         client = self.fake_client(truncated_body(), truncated_body(), truncated_body())
         payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
         self.assertIsNone(payload)
         self.assertFalse(error["ok"])
+        self.assertIn(INCOMPLETE_TEXT, error["error"])
+        self.assertIn("已请求 3 次", error["error"])
+        self.assertNotIn("接口路径或入参可能已变化", error["hint"])
         self.assertEqual(len(client.calls), FETCH_ATTEMPTS)
         self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+
+    def test_illegal_access_page_stops_after_one_request(self):
+        """非法访问页是完整错误页：一次即停，提示指向接口契约可能已变化。"""
+        body = "<html><body>提示：非法访问！</body></html>"
+        client = self.fake_client(("200", body), self.table_response())
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(payload)
+        self.assertFalse(error["ok"])
+        self.assertIn("非法访问", error["error"])
+        self.assertIn("接口路径或入参可能已变化", error["hint"])
+        self.assertEqual(len(client.calls), 1)
 
     def test_login_page_is_not_retried(self):
         """登录页是完整页面，重试只会拿到同一份，因此只请求一次就停。"""
@@ -1875,29 +1859,13 @@ class ClassroomFetchRetryTest(ClassroomRequestTestCase):
         self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
         self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
 
-    def test_parent_page_truncated_body_is_retried(self):
-        """父页标题取不出来（正文没传完）时重试，第二次拿到完整父页。"""
+    def test_parent_page_with_incomplete_body_is_not_retried(self):
+        """父页标题取不出来时按页面未被识别停下：重发只会拿到同一份。"""
         client = self.fake_client(("200", "<html><head><title>"), ("200", parent_page()))
         page, error = fetch_parent_page(client)
-        self.assertIsNone(error)
-        self.assertEqual(len(client.calls), 2)
-        self.assertEqual(page["selected"], SELECTED_SEMESTER)
-
-    def test_truncated_dictionary_json_is_retried(self):
-        """字典正文被掐断（JSON 读不动）时重试一次，第二次拿到完整名单。"""
-        client = self.fake_client(("200", '{"result": tr'), dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}]))
-        dictionary, error = fetch_dictionary(client)
-        self.assertIsNone(error)
-        self.assertEqual(len(client.calls), 2)
-        self.assertEqual(dictionary["records"][0]["jsmc"], "数学楼401")
-
-    def test_truncated_roster_is_not_retried(self):
-        """list 长度等于 maxRow 是服务端给出的截断结论，重试只会拿到同样的长度。"""
-        items = [{"jsid": "JSID-" + str(index), "jsmc": "数学楼" + str(index)} for index in range(DICTIONARY_MAX_ROW)]
-        client = self.fake_client(dictionary_body(items))
-        dictionary, error = fetch_dictionary(client)
-        self.assertIsNone(dictionary)
-        self.assertIn("截断", error["error"])
+        self.assertIsNone(page)
+        self.assertFalse(error["ok"])
+        self.assertIn("接口路径或入参可能已变化", error["hint"])
         self.assertEqual(len(client.calls), 1)
 
 
@@ -1962,23 +1930,21 @@ class ClassroomSerialRefreshTest(ClassroomRequestTestCase):
         fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
         self.assertEqual(len(client.calls), 2)
 
-    def test_page_and_dictionary_have_their_own_resources(self):
-        """父页与字典各自一个资源名：第二次调用复用结果，不再请求上游。"""
-        page_body = parent_page()
-        dictionary_data = dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}])
-        client = self.fake_client(("200", page_body), dictionary_data)
+    def test_page_and_semester_have_their_own_resources(self):
+        """父页与某个学期各自一个资源名：第二次调用复用结果，不再请求上游。"""
+        client = self.fake_client(("200", parent_page()), self.table_response())
         fetch_parent_page(client)
-        fetch_dictionary(client)
+        fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
         page, page_error = fetch_parent_page(client)
-        dictionary, dictionary_error = fetch_dictionary(client)
+        semester, semester_error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
         self.assertIsNone(page_error)
-        self.assertIsNone(dictionary_error)
+        self.assertIsNone(semester_error)
         self.assertEqual(page["selected"], SELECTED_SEMESTER)
-        self.assertEqual(dictionary["records"][0]["jsid"], "JSID-A")
+        self.assertEqual(semester["rooms"], ["数学楼401"])
         self.assertEqual(len(client.calls), 2)
 
 
-# 反推用例：字典、本学年学期教室名与本次课表都是拼出来的纯数据，不发请求、不读真实缓存。
+# 反推用例：内置总表、本学年学期教室名与本次课表都是拼出来的纯数据，不发请求、不读真实缓存。
 
 
 # 反推用例里的楼栋前缀：房号决定是不是同一间教室。
@@ -2008,7 +1974,7 @@ def block_cell_index(weekday, block_name):
 
 
 class ClassroomReverseTestCase(ClassroomCacheTestCase):
-    """反推用例的共同部分：拼字典、本学年学期教室名、本次课表与查询参数。"""
+    """反推用例的共同部分：拼内置总表、本学年学期教室名、本次课表与查询参数。"""
 
     # 属性测试的固定种子与轮数，让用例可复现。
     SEED = 20261018
@@ -2017,10 +1983,10 @@ class ClassroomReverseTestCase(ClassroomCacheTestCase):
     # 全部 5 个大节，按表头顺序。
     ALL_BLOCKS = tuple(name for name, _periods in PERIOD_BLOCKS)
 
-    def dictionary_of_rooms(self, names):
-        """把教室名列表拼成字典：一条记录一间教室，jsid 按顺序编号。"""
-        items = [{"jsid": "JSID-" + str(index), "jsmc": name} for index, name in enumerate(names)]
-        return self.dictionary_of(items)
+    def roster_of_rooms(self, names):
+        """把教室名列表拼成总表快照：一条记录一间教室，jsid 按顺序编号。"""
+        rooms = [["JSID-" + str(index), name] for index, name in enumerate(names)]
+        return self.roster_of(rooms)
 
     def params_of(self, **overrides):
         """拼一份通过校验的查询参数；默认查第 6 周星期三的 1–2 节。"""
@@ -2046,19 +2012,34 @@ class ClassroomReverseTestCase(ClassroomCacheTestCase):
         self.assertIsNone(error)
         return params
 
-    def result_names(self, dictionary, semesters, parsed, params, keyword):
+    def result_names(self, roster, semesters, parsed, params, keyword):
         """按给定关键词跑一次反推，返回结果里的教室名列表。"""
         picked = dict(params)
         picked["keyword"] = normalize_room_name(keyword)
-        result = empty_classroom_result(dictionary, semesters, parsed, picked)
+        result = empty_classroom_result(roster, semesters, parsed, picked)
         self.assertTrue(result["ok"])
         return [room["name"] for room in result["rooms"]]
 
-    def random_scene(self, generator):
-        """随机造一份场景：返回 (字典, 学期教室名, 本次课表, 查询参数)。
+    def universe_of(self, roster, semesters):
+        """按并集口径取全集：总表展开出的教室 ∪ 各学期课表首格展开出的教室。"""
+        names = set(dictionary_room_index(roster))
+        for rooms in (semesters or {}).values():
+            names.update(rooms)
+        return names
 
-        字典里有秋季名单里的教室、只出现在春季名单里的教室，以及本学年哪个完整学期都没有的
-        教室；秋季与春季都凑够阈值；本次课表随机覆盖字典教室的一部分行。
+    def room_of(self, result, name):
+        """从结果里取某间教室那条记录；找不到时直接判失败，避免静默跳过断言。"""
+        for room in result["rooms"]:
+            # 展示名完全相同才是要找的那一间。
+            if room["name"] == name:
+                return room
+        self.fail("结果里没有这间教室: " + name)
+
+    def random_scene(self, generator):
+        """随机造一份场景：返回 (总表, 学期教室名, 本次课表, 查询参数)。
+
+        总表里有秋季名单里的教室、只出现在春季名单里的教室，以及本学年哪个完整学期都没有的
+        教室；秋季与春季都凑够阈值；本次课表随机覆盖总表教室的一部分行。
         """
         autumn_only = generator.sample(range(101, 125), generator.randint(0, 4))
         spring_only = generator.sample(range(301, 325), generator.randint(1, 4))
@@ -2078,7 +2059,7 @@ class ClassroomReverseTestCase(ClassroomCacheTestCase):
             period_start=start,
             period_end=generator.randint(start, 12),
         )
-        return self.dictionary_of_rooms(names), semesters, self.parsed_table(rows), params
+        return self.roster_of_rooms(names), semesters, self.parsed_table(rows), params
 
 class ClassroomReverseUnitTest(ClassroomReverseTestCase):
     """任务 9.1 / 需求 3.5、3.6、3.7、3.8、4.1、4.2、5.2：候选减占用、空闲信息与结果组装。"""
@@ -2088,7 +2069,8 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         name = reverse_room(101)
         semesters = {SELECTED_SEMESTER: semester_room_names(*REVERSE_AUTUMN_RANGE)}
         parsed = self.parsed_table([(name, {0})])
-        result = empty_classroom_result(self.dictionary_of_rooms([name]), semesters, parsed, self.params_of(weekday=3))
+        roster = self.roster_of_rooms([name])
+        result = empty_classroom_result(roster, semesters, parsed, self.params_of(weekday=3))
         self.assertEqual(result["weekday_name"], "星期三")
 
     def target_rooms(self):
@@ -2096,26 +2078,39 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         return semester_room_names(*REVERSE_AUTUMN_RANGE)
 
     def test_candidates_minus_occupied(self):
-        """占用集中的教室不进结果，其余候选教室进结果。"""
+        """占用集中的教室不进结果，候选集里其余的教室都进结果。"""
         rooms = self.target_rooms()
         target = rooms[:3]
-        dictionary = self.dictionary_of_rooms(target)
+        roster = self.roster_of_rooms(target)
         # 第 1 间在查询日的大节上有课，后两间这周这天没有行。
         parsed = self.parsed_table([(target[0], {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
         self.assertTrue(result["ok"])
-        self.assertEqual([room["name"] for room in result["rooms"]], target[1:])
-        self.assertEqual(result["count"], 2)
+        # 全集并上了课表首格里的教室，所以候选集就是整份秋季名单。
+        self.assertEqual(result["count"], len(rooms) - 1)
+        self.assertNotIn(target[0], [room["name"] for room in result["rooms"]])
+        self.assertEqual(result["rooms"][0]["name"], rooms[1])
+
+    def test_room_only_in_the_schedule_enters_the_results(self):
+        """只在课表首格里出现过的教室也进候选集，jsid 为空、来源展示名就是它自己。"""
+        rooms = self.target_rooms()
+        name = reverse_room(401)
+        roster = self.roster_of_rooms(rooms[:2])
+        parsed = self.parsed_table([(name, set())])
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms + [name]}, parsed, self.params_of())
+        room = self.room_of(result, name)
+        self.assertEqual(room["jsid"], "")
+        self.assertEqual(room["source_names"], [name])
+        self.assertTrue(room["free_all_day"])
 
     def test_row_with_other_blocks_is_not_occupied_and_stays_in_results(self):
         """同行别的块有内容、所选大节为空时，该教室算不上课并出现在结果里。"""
         name = reverse_room(101)
         rooms = self.target_rooms()
-        dictionary = self.dictionary_of_rooms([name])
+        roster = self.roster_of_rooms([name])
         parsed = self.parsed_table([(name, {block_cell_index(3, "0607")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [name])
-        room = result["rooms"][0]
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = self.room_of(result, name)
         self.assertEqual(room["occupied_blocks"], ["0607"])
         self.assertFalse(room["free_all_day"])
         # 所选大节是 0102，它在所选大节上仍然空闲。
@@ -2126,26 +2121,28 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         name = reverse_room(101)
         other = reverse_room(102)
         rooms = self.target_rooms()
-        dictionary = self.dictionary_of_rooms([name, other])
+        roster = self.roster_of_rooms([name, other])
         # 课表里只有另一间教室的行：目标教室这周这天压根不出现。
         parsed = self.parsed_table([(other, {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [name])
-        room = result["rooms"][0]
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = self.room_of(result, name)
         self.assertTrue(room["free_all_day"])
         self.assertEqual(room["free_blocks"], list(self.ALL_BLOCKS))
         self.assertEqual(room["occupied_blocks"], [])
         self.assertEqual(room["last_free_period"], 12)
+        # 有课的那间被减掉，不在结果里。
+        self.assertNotIn(other, [room["name"] for room in result["rooms"]])
 
     def test_year_round_idle_rooms_are_excluded(self):
         """本学年完整学期都没出现过的教室被排除，并计入排除数量。"""
         active = reverse_room(101)
         idle = reverse_room(601)
         rooms = self.target_rooms()
-        dictionary = self.dictionary_of_rooms([active, idle])
+        roster = self.roster_of_rooms([active, idle])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [active])
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertIn(active, [room["name"] for room in result["rooms"]])
+        self.assertNotIn(idle, [room["name"] for room in result["rooms"]])
         self.assertEqual(result["excluded_year_round_idle_count"], 1)
 
     def test_room_scheduled_in_another_semester_is_kept(self):
@@ -2156,31 +2153,33 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
             SELECTED_SEMESTER: semester_room_names(*REVERSE_AUTUMN_RANGE),
             "2026-2027-2": semester_room_names(*REVERSE_SPRING_RANGE),
         }
-        dictionary = self.dictionary_of_rooms([autumn_only, spring_only])
+        roster = self.roster_of_rooms([autumn_only, spring_only])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, semesters, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [autumn_only, spring_only])
+        result = empty_classroom_result(roster, semesters, parsed, self.params_of())
+        names = [room["name"] for room in result["rooms"]]
+        self.assertIn(autumn_only, names)
+        self.assertIn(spring_only, names)
         self.assertEqual(result["excluded_year_round_idle_count"], 0)
 
     def test_keyword_only_narrows_the_results(self):
         """关键词只缩小结果，不新增候选以外的教室。"""
         rooms = self.target_rooms()
-        dictionary = self.dictionary_of_rooms(rooms[:3])
+        roster = self.roster_of_rooms(rooms[:3])
         semesters = {SELECTED_SEMESTER: rooms}
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
-        base = self.result_names(dictionary, semesters, parsed, self.params_of(), "")
-        self.assertEqual(base, rooms[:3])
-        narrowed = self.result_names(dictionary, semesters, parsed, self.params_of(), "格物楼102")
+        base = self.result_names(roster, semesters, parsed, self.params_of(), "")
+        self.assertEqual(base, rooms)
+        narrowed = self.result_names(roster, semesters, parsed, self.params_of(), "格物楼102")
         self.assertEqual(narrowed, [rooms[1]])
         self.assertLessEqual(set(narrowed), set(base))
 
     def test_keyword_without_hit_keeps_both_notes(self):
         """关键词没有命中时仍是成功结果，count 为 0 且两句说明都在。"""
         rooms = self.target_rooms()
-        dictionary = self.dictionary_of_rooms([rooms[0], reverse_room(601)])
+        roster = self.roster_of_rooms([rooms[0], reverse_room(601)])
         parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")})])
         result = empty_classroom_result(
-            dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
+            roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["count"], 0)
@@ -2191,31 +2190,30 @@ class ClassroomReverseUnitTest(ClassroomReverseTestCase):
         self.assertEqual(result["excluded_year_round_idle_count"], 1)
 
     def test_rooms_merged_from_the_same_display_name_lose_their_jsid(self):
-        """同名多条字典记录时 jsid 留空，并在 warnings 里记「同名行已合并」。"""
+        """同名多条总表记录时 jsid 留空，并在 warnings 里记「同名行已合并」。"""
         rooms = self.target_rooms()
-        items = ({"jsid": "AAA", "jsmc": rooms[0]}, {"jsid": "BBB", "jsmc": rooms[0]})
-        dictionary = self.dictionary_of(items)
+        roster = self.roster_of([["AAA", rooms[0]], ["BBB", rooms[0]]])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [rooms[0]])
-        self.assertEqual(result["rooms"][0]["jsid"], "")
-        self.assertEqual(result["rooms"][0]["source_names"], [rooms[0]])
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = self.room_of(result, rooms[0])
+        self.assertEqual(room["jsid"], "")
+        self.assertEqual(room["source_names"], [rooms[0]])
         self.assertIn(MERGED_ROOM_WARNING + rooms[0], result["warnings"])
 
-
     def test_unexpandable_names_only_show_up_in_warnings(self):
-        """字典与课表里无法展开的原始名称只进 warnings，不成为结果行。"""
+        """总表与课表里无法展开的原始名称只进 warnings，不成为结果行。"""
         rooms = self.target_rooms()
-        items = ({"jsid": "AAA", "jsmc": rooms[0]}, {"jsid": "BBB", "jsmc": "演播厅"})
-        dictionary = self.dictionary_of(items)
+        roster = self.roster_of([["AAA", rooms[0]], ["BBB", "演播厅"]])
         # 课表里另有一行首格也取不出房号，它同样只能进警告。
         parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")}), ("走廊", {0})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        # 目标学期里唯一能展开的候选教室这天有课，所以结果为空。
-        self.assertEqual(result["rooms"], [])
-        self.assertIn("演播厅", " ".join(result["warnings"]))
-        self.assertIn("走廊", " ".join(result["warnings"]))
-        self.assertEqual(result["count"], 0)
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertTrue(result["ok"])
+        warning_text = " ".join(result["warnings"])
+        self.assertIn("演播厅", warning_text)
+        self.assertIn("走廊", warning_text)
+        # 取不出房号的名称不产生结果行：有课的那间被减掉，其余秋季教室都在。
+        self.assertNotIn("演播厅", [room["name"] for room in result["rooms"]])
+        self.assertEqual(result["count"], len(rooms) - 1)
 
 
 class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
@@ -2224,9 +2222,9 @@ class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
     def test_incomplete_autumn_stops_reversing(self):
         """秋季只有 199 间时停止反推，失败结果里没有 rooms。"""
         rooms = semester_room_names(101, 199)
-        dictionary = self.dictionary_of_rooms(rooms[:3])
+        roster = self.roster_of_rooms(rooms[:3])
         parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
         self.assertFalse(result["ok"])
         self.assertIn("完整阈值", result["error"])
         self.assertTrue(result["hint"])
@@ -2237,36 +2235,41 @@ class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
         summer_room = reverse_room(701)
         autumn = semester_room_names(*REVERSE_AUTUMN_RANGE)
         summer = [summer_room] + semester_room_names(801, 48)
-        dictionary = self.dictionary_of_rooms([reverse_room(101), summer_room])
+        roster = self.roster_of_rooms([reverse_room(101), summer_room])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
         result = empty_classroom_result(
-            dictionary, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
+            roster, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
         )
         self.assertTrue(result["ok"])
-        self.assertEqual([room["name"] for room in result["rooms"]], [reverse_room(101)])
-        self.assertEqual(result["excluded_year_round_idle_count"], 1)
+        # 秋季名单里的教室进结果；只出现在不完整夏季的教室不当候选。
+        self.assertEqual(result["count"], len(autumn))
+        self.assertNotIn(summer_room, [room["name"] for room in result["rooms"]])
+        # 不完整夏季的教室不当候选，因此落在全年无课一侧：计数等于夏季名单的长度
+        # （总表里那间全年无课教室也在夏季名单里出现，两边并集后只算一次）。
+        self.assertEqual(result["excluded_year_round_idle_count"], len(summer))
 
     def test_complete_summer_room_enters_candidates(self):
         """夏季有 50 间且某教室出现在首格时，该教室进候选集。"""
         summer_room = reverse_room(701)
         autumn = semester_room_names(*REVERSE_AUTUMN_RANGE)
         summer = [summer_room] + semester_room_names(801, 49)
-        dictionary = self.dictionary_of_rooms([reverse_room(101), summer_room])
+        roster = self.roster_of_rooms([reverse_room(101), summer_room])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
         result = empty_classroom_result(
-            dictionary, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
+            roster, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
         )
         self.assertTrue(result["ok"])
         self.assertIn(summer_room, [room["name"] for room in result["rooms"]])
+        self.assertEqual(result["count"], len(autumn) + len(summer))
         self.assertEqual(result["excluded_year_round_idle_count"], 0)
 
     def test_no_complete_autumn_or_spring_stops_reversing(self):
         """本学年只有完整夏季时停止反推，说明全年无课判断缺少可用数据。"""
         summer = semester_room_names(701, 60)
-        dictionary = self.dictionary_of_rooms(summer[:3])
+        roster = self.roster_of_rooms(summer[:3])
         parsed = self.parsed_table([(summer[0], {block_cell_index(3, "0102")})])
         result = empty_classroom_result(
-            dictionary, {"2026-2027-3": summer}, parsed, self.params_of(semester="2026-2027-3")
+            roster, {"2026-2027-3": summer}, parsed, self.params_of(semester="2026-2027-3")
         )
         self.assertFalse(result["ok"])
         self.assertIn("秋季", result["error"])
@@ -2280,18 +2283,18 @@ class ClassroomReverseSubsetPropertyTest(ClassroomReverseTestCase):
         """不上课集逐轮都落在指定教室集与候选集里。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            index = dictionary_room_index(dictionary)
+            roster, semesters, parsed, params = self.random_scene(generator)
+            universe = self.universe_of(roster, semesters)
             evidence, _complete = semester_evidence_rooms(semesters)
-            candidates = candidate_rooms(set(index), evidence)
+            candidates = candidate_rooms(universe, evidence)
             selected = selected_rooms(candidates, params["keyword"])
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             self.assertTrue(result["ok"])
             names = {room["name"] for room in result["rooms"]}
-            # 不上课集既是指定教室集的子集，也是候选集的子集，还都在字典全集里。
+            # 不上课集既是指定教室集的子集，也是候选集的子集，还都在全集里。
             self.assertLessEqual(names, selected)
             self.assertLessEqual(names, candidates)
-            self.assertLessEqual(candidates, set(index))
+            self.assertLessEqual(candidates, universe)
 
 
 class ClassroomOccupiedExclusionPropertyTest(ClassroomReverseTestCase):
@@ -2301,11 +2304,11 @@ class ClassroomOccupiedExclusionPropertyTest(ClassroomReverseTestCase):
         """占用集逐轮都与不上课集不相交。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
+            roster, semesters, parsed, params = self.random_scene(generator)
             blocks = query_blocks(params["period_start"], params["period_end"])
             busy = occupied_rooms(parsed, params["weekday"], blocks)
             occupancy_map = room_occupancy_map(parsed)
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             names = {room["name"] for room in result["rooms"]}
             # 占用集与不上课集不相交。
             self.assertEqual(busy & names, set())
@@ -2322,15 +2325,15 @@ class ClassroomYearRoundIdlePropertyTest(ClassroomReverseTestCase):
         """全年无课集逐轮都与候选集不相交。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            index = dictionary_room_index(dictionary)
+            roster, semesters, parsed, params = self.random_scene(generator)
+            universe = self.universe_of(roster, semesters)
             evidence, _complete = semester_evidence_rooms(semesters)
-            candidates = candidate_rooms(set(index), evidence)
-            idle = year_round_idle_rooms(set(index), candidates)
-            # 两个集合不相交，并且一起覆盖字典全集。
+            candidates = candidate_rooms(universe, evidence)
+            idle = year_round_idle_rooms(universe, candidates)
+            # 两个集合不相交，并且一起覆盖全集。
             self.assertEqual(idle & candidates, set())
-            self.assertEqual(idle | candidates, set(index))
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            self.assertEqual(idle | candidates, universe)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             self.assertEqual(result["excluded_year_round_idle_count"], len(idle))
 
 
@@ -2340,20 +2343,20 @@ class ClassroomBlockMonotonicPropertyTest(ClassroomReverseTestCase):
     # 三种范围都从第 1 小节起，覆盖面逐级包含。
     RANGES = ((1, 2), (1, 5), (1, 12))
 
-    def sets_of_range(self, dictionary, semesters, parsed, weekday, period_start, period_end):
+    def sets_of_range(self, roster, semesters, parsed, weekday, period_start, period_end):
         """按给定大节范围反推一次，返回 (占用集, 不上课集)。"""
         blocks = query_blocks(period_start, period_end)
         params = self.params_of(weekday=weekday, period_start=period_start, period_end=period_end)
-        result = empty_classroom_result(dictionary, semesters, parsed, params)
+        result = empty_classroom_result(roster, semesters, parsed, params)
         return occupied_rooms(parsed, weekday, blocks), {room["name"] for room in result["rooms"]}
 
     def test_wider_ranges_only_grow_occupied_and_shrink_resting(self):
         """范围逐级变宽时占用集递增、不上课集递减。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
+            roster, semesters, parsed, params = self.random_scene(generator)
             weekday = params["weekday"]
-            pairs = [self.sets_of_range(dictionary, semesters, parsed, weekday, *pair) for pair in self.RANGES]
+            pairs = [self.sets_of_range(roster, semesters, parsed, weekday, *pair) for pair in self.RANGES]
             # 逐对比较相邻的范围：后一个的覆盖面更大。
             for index in range(len(pairs) - 1):
                 narrower = pairs[index]
@@ -2366,15 +2369,20 @@ class ClassroomBlockMonotonicPropertyTest(ClassroomReverseTestCase):
         """只在 101112 有课的教室：查 1–2 与 1–5 时不上课，查 1–12 时被占用。"""
         name = reverse_room(101)
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
-        dictionary = self.dictionary_of_rooms([name])
+        roster = self.roster_of_rooms([name])
         semesters = {SELECTED_SEMESTER: rooms}
         parsed = self.parsed_table([(name, {block_cell_index(3, "101112")})])
-        narrow = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 2)
-        middle = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 5)
-        wide = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 12)
-        self.assertEqual(narrow, (set(), {name}))
-        self.assertEqual(middle, (set(), {name}))
-        self.assertEqual(wide, ({name}, set()))
+        narrow = self.sets_of_range(roster, semesters, parsed, 3, 1, 2)
+        middle = self.sets_of_range(roster, semesters, parsed, 3, 1, 5)
+        wide = self.sets_of_range(roster, semesters, parsed, 3, 1, 12)
+        # 覆盖面不含 101112 时这间教室不上课，含它时才被占用。
+        self.assertEqual(narrow[0], set())
+        self.assertEqual(middle[0], set())
+        self.assertEqual(wide[0], {name})
+        self.assertIn(name, narrow[1])
+        self.assertIn(name, middle[1])
+        self.assertNotIn(name, wide[1])
+        self.assertGreater(len(narrow[1]), len(wide[1]))
 
 
 class ClassroomFreeBlocksPropertyTest(ClassroomReverseTestCase):
@@ -2384,9 +2392,9 @@ class ClassroomFreeBlocksPropertyTest(ClassroomReverseTestCase):
         """结果里每间教室在所选大节上都空闲。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
+            roster, semesters, parsed, params = self.random_scene(generator)
             blocks = query_blocks(params["period_start"], params["period_end"])
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             for room in result["rooms"]:
                 self.assertLessEqual(set(blocks), set(room["free_blocks"]))
                 self.assertEqual(set(room["occupied_blocks"]) & set(blocks), set())
@@ -2413,8 +2421,8 @@ class ClassroomFreeFieldConsistencyPropertyTest(ClassroomReverseTestCase):
         """结果里每间教室的空闲字段逐轮自洽。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            roster, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             for room in result["rooms"]:
                 self.assert_consistent(room)
 
@@ -2422,11 +2430,10 @@ class ClassroomFreeFieldConsistencyPropertyTest(ClassroomReverseTestCase):
         """只有 101112 有课时最晚可用节次是 9。"""
         name = reverse_room(101)
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
-        dictionary = self.dictionary_of_rooms([name])
+        roster = self.roster_of_rooms([name])
         parsed = self.parsed_table([(name, {block_cell_index(3, "101112")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], [name])
-        room = result["rooms"][0]
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = self.room_of(result, name)
         self.assertEqual(room["occupied_blocks"], ["101112"])
         self.assertEqual(room["free_blocks"], ["0102", "030405", "0607", "0809"])
         self.assertEqual(room["last_free_period"], 9)
@@ -2452,11 +2459,17 @@ class ClassroomMissingRowPropertyTest(ClassroomReverseTestCase):
         """构造一份少了几间教室的响应，缺的教室照样进结果。"""
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
         target = rooms[:4]
-        dictionary = self.dictionary_of_rooms(target)
+        roster = self.roster_of_rooms(target)
         # 响应里只有第 1 间有课，后三间这周这天整行都不在。
         parsed = self.parsed_table([(target[0], {block_cell_index(3, "0102")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        self.assertEqual([room["name"] for room in result["rooms"]], target[1:])
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertNotIn(target[0], [room["name"] for room in result["rooms"]])
+        for name in target[1:]:
+            # 响应里没有这些行，它们照样进结果并且整天空闲。
+            room = self.room_of(result, name)
+            self.assertTrue(room["free_all_day"])
+            self.assertEqual(room["occupied_blocks"], [])
+            self.assertEqual(room["last_free_period"], 12)
         for room in result["rooms"]:
             self.assertTrue(room["free_all_day"])
             self.assertEqual(room["occupied_blocks"], [])
@@ -2466,33 +2479,33 @@ class ClassroomMissingRowPropertyTest(ClassroomReverseTestCase):
         """结果集等于指定教室集减去占用集，与响应里出现了哪些行无关。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
+            roster, semesters, parsed, params = self.random_scene(generator)
             blocks = query_blocks(params["period_start"], params["period_end"])
-            index = dictionary_room_index(dictionary)
+            universe = self.universe_of(roster, semesters)
             evidence, _complete = semester_evidence_rooms(semesters)
-            candidates = candidate_rooms(set(index), evidence)
+            candidates = candidate_rooms(universe, evidence)
             busy = occupied_rooms(parsed, params["weekday"], blocks)
             expected = selected_rooms(candidates, params["keyword"]) - busy
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             self.assertEqual({room["name"] for room in result["rooms"]}, expected)
 
 
 class ClassroomKeywordPropertyTest(ClassroomReverseTestCase):
-    """任务 9.10 / 设计 Correctness Properties 第 12 条 / 需求 3.4：关键词过滤不创造字典外教室。"""
+    """任务 9.10 / 设计 Correctness Properties 第 12 条 / 需求 3.4：关键词过滤不创造全集外教室。"""
 
-    # 覆盖空关键词、楼名、部分房号、完整教室名与字典里没有的词。
+    # 覆盖空关键词、楼名、部分房号、完整教室名与全集里没有的词。
     KEYWORDS = ("", "格物楼", "格物楼10", "格物楼101", "体育场")
 
     def test_keyword_only_narrows_and_never_creates_rooms(self):
-        """关键词只缩小结果，且不会造出字典外的教室。"""
+        """关键词只缩小结果，且不会造出全集外的教室。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            known = set(dictionary_room_index(dictionary))
-            base = set(self.result_names(dictionary, semesters, parsed, params, ""))
+            roster, semesters, parsed, params = self.random_scene(generator)
+            known = self.universe_of(roster, semesters)
+            base = set(self.result_names(roster, semesters, parsed, params, ""))
             for keyword in self.KEYWORDS:
-                names = self.result_names(dictionary, semesters, parsed, params, keyword)
-                # 结果只会比不带关键词时更少，且每间教室都在字典全集里，按展示名排序。
+                names = self.result_names(roster, semesters, parsed, params, keyword)
+                # 结果只会比不带关键词时更少，且每间教室都在全集里，按展示名排序。
                 self.assertLessEqual(set(names), base)
                 self.assertLessEqual(set(names), known)
                 self.assertEqual(names, sorted(names))
@@ -2505,8 +2518,8 @@ class ClassroomStatusNotePropertyTest(ClassroomReverseTestCase):
         """每次成功结果的字段都满足同一套状态与说明口径。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            roster, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             self.assertEqual(result["limitation"], LIMITATION_TEXT)
             self.assertEqual(result["block_note"], BLOCK_NOTE_TEXT)
             self.assertEqual(result["count"], len(result["rooms"]))
@@ -2519,10 +2532,10 @@ class ClassroomStatusNotePropertyTest(ClassroomReverseTestCase):
     def test_empty_result_still_carries_both_notes(self):
         """查询成功但没有教室落入结果时，两句说明仍在。"""
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
-        dictionary = self.dictionary_of_rooms(rooms[:2])
+        roster = self.roster_of_rooms(rooms[:2])
         parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
         result = empty_classroom_result(
-            dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
+            roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["count"], 0)
@@ -2549,8 +2562,8 @@ class ClassroomFreeSwitchPropertyTest(ClassroomReverseTestCase):
         self.assertEqual(set(FREE_SWITCHES), {"free_all_day", "free_morning", "free_afternoon", "free_evening"})
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            before = empty_classroom_result(dictionary, semesters, parsed, params)["rooms"]
+            roster, semesters, parsed, params = self.random_scene(generator)
+            before = empty_classroom_result(roster, semesters, parsed, params)["rooms"]
             snapshot = json.loads(json.dumps(before, ensure_ascii=False))
             # 一个开关都没打开时结果原样返回。
             self.assertEqual(filter_free_rooms(before, ()), before)
@@ -2573,8 +2586,8 @@ class ClassroomSectionFieldPropertyTest(ClassroomReverseTestCase):
         """每个结果教室的时段字段都与它的空闲大节一致。"""
         generator = random.Random(self.SEED)
         for _round in range(self.ROUNDS):
-            dictionary, semesters, parsed, params = self.random_scene(generator)
-            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            roster, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(roster, semesters, parsed, params)
             for room in result["rooms"]:
                 free = set(room["free_blocks"])
                 # 上午是两个块都空闲，下午是两个块都空闲，晚上只看 101112。
@@ -2588,10 +2601,10 @@ class ClassroomSectionFieldPropertyTest(ClassroomReverseTestCase):
         """只有 0607 有课时上午与晚上空闲、下午不空闲。"""
         name = reverse_room(101)
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
-        dictionary = self.dictionary_of_rooms([name])
+        roster = self.roster_of_rooms([name])
         parsed = self.parsed_table([(name, {block_cell_index(3, "0607")})])
-        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
-        room = result["rooms"][0]
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = self.room_of(result, name)
         self.assertEqual(room["occupied_blocks"], ["0607"])
         self.assertTrue(room["free_morning"])
         self.assertTrue(room["free_evening"])
@@ -2617,12 +2630,13 @@ class ClassroomSingleDayPropertyTest(ClassroomReverseTestCase):
         """查星期三时只算星期三的格：别的天有课不算占用，别的天为空也不改变判定。"""
         name = reverse_room(101)
         rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
-        dictionary = self.dictionary_of_rooms([name])
+        roster = self.roster_of_rooms([name])
         monday_full = {block_cell_index(1, block_name) for block_name, _periods in PERIOD_BLOCKS}
         # 星期一整天有课、星期三没有课：查星期三时这间教室仍然是「不上课」。
         parsed = self.parsed_table([(name, monday_full)])
         params = self.params_of(period_start=1, period_end=12)
-        room = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, params)["rooms"][0]
+        result = empty_classroom_result(roster, {SELECTED_SEMESTER: rooms}, parsed, params)
+        room = self.room_of(result, name)
         self.assertEqual(room["occupied_blocks"], [])
         self.assertTrue(room["free_all_day"])
         self.assertEqual(room["last_free_period"], 12)
@@ -2645,14 +2659,15 @@ class ClassroomSingleDayPropertyTest(ClassroomReverseTestCase):
 ORCH_AUTUMN_RANGE = (101, 200)
 ORCH_SPRING_RANGE = (301, 200)
 ORCH_SUMMER_RANGE = (601, 50)
-# 只出现在字典里、本学年哪个学期都没有排课的教室：用来断言全年无课计数。
+# 只出现在总表里、本学年哪个学期都没有排课的教室：用来断言全年无课计数。
 ORCH_IDLE_RANGE = (701, 3)
+ORCH_ROSTER_CAPTURED_AT = "2026-10-08T15:14:00+08:00"
 
 # 本次查询的固定口径：第 6 周星期三 1–2 节，正好落在 0102 块。
 ORCH_WEEK = 6
 ORCH_WEEKDAY = 3
 ORCH_BLOCK = "0102"
-# 本次课表里固定放一行字典外的教室：让响应至少有一行首格能取出教室名，又不影响候选集。
+# 本次课表里固定放一行全集外的教室：让响应至少有一行首格能取出教室名，又不影响候选集。
 ORCH_SPARE_ROOM = "格物楼999"
 
 # 失败页插入的三个位置：父页 GET、学期课表 POST、本次查询 POST。
@@ -2677,13 +2692,13 @@ NO_TABLE_PAGE = (
 SHORT_GRID_PAGE = classroom_table([("格物楼B101", grid_cells({0})[:-1])])
 
 # 失败页样本：(说明, 页面, 不可用的位置, 这次会被请求几次)。
-# 登录页、非法访问与互踢都是完整页面，重试也拿不到别的，所以只请求一次；
-# 结构坏掉的页面按「正文没传完」重试到次数上限。
+# 登录页、非法访问、会话互踢与父页标题不符都是完整页面，重发只会拿到同一份，只请求一次；
+# 缺 kbtable 与格数不是 35 属于「正文没形成可用课表」，按不完整处理，重发到次数上限。
 FAILURE_PAGE_SAMPLES = (
     ("登录页", LOGIN_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
     ("非法访问", ILLEGAL_ACCESS_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
     ("会话互踢", SESSION_KICKED_PAGE, (PARENT_POSITION, SEMESTER_POSITION, QUERY_POSITION), 1),
-    ("标题不是教室课表", OTHER_TITLE_PAGE, (PARENT_POSITION,), FETCH_ATTEMPTS),
+    ("标题不是教室课表", OTHER_TITLE_PAGE, (PARENT_POSITION,), 1),
     ("缺 kbtable", NO_TABLE_PAGE, (SEMESTER_POSITION, QUERY_POSITION), FETCH_ATTEMPTS),
     ("格数不是 35", SHORT_GRID_PAGE, (SEMESTER_POSITION, QUERY_POSITION), FETCH_ATTEMPTS),
 )
@@ -2698,8 +2713,8 @@ def orchestration_semester_rooms():
     }
 
 
-def orchestration_dictionary_names():
-    """字典里的教室名：本学年三个学期的教室加上全年无课的教室。"""
+def orchestration_roster_names():
+    """内置总表里的教室名：本学年三个学期的教室加上全年无课的教室。"""
     rooms = orchestration_semester_rooms()
     names = list(semester_room_names(*ORCH_IDLE_RANGE))
     for semester in EXPECTED_YEAR_SEMESTERS:
@@ -2710,7 +2725,7 @@ def orchestration_dictionary_names():
 class CacheRefreshingClient(FakeClassroomClient):
     """假客户端：命中某次请求时先写一份缓存，模拟另一个进程在这段时间刷新成功。
 
-    命中判定只看表单字段与取值（字典请求按 maxRow、学期请求按 xnxqh）。编排在刷新失败后会重新
+    命中判定只看表单字段与取值（学期请求按 xnxqh）。编排在刷新失败后会重新
     读一次缓存文件，这个类让那次重读读到未过期的缓存，用来覆盖「刷新失败但有未过期缓存时继续」
     的降级路径。
     """
@@ -2756,15 +2771,49 @@ class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
             values["keyword"],
         )
 
-    def dictionary_items(self, names):
-        """把教室名列表拼成字典条目：一条记录一间教室，jsid 按顺序编号。"""
-        return [{"jsid": "JSID-" + str(index), "jsmc": name} for index, name in enumerate(names)]
+    def roster_snapshot(self, names):
+        """把教室名列表拼成总表快照对象：一条记录一间教室，jsid 按顺序编号。"""
+        rooms = [["JSID-" + str(index), name] for index, name in enumerate(names)]
+        return {
+            "source": "/jsxsd/kbcx/queryJs2",
+            "captured_at": ORCH_ROSTER_CAPTURED_AT,
+            "max_row": 5000,
+            "count": len(rooms),
+            "rooms": rooms,
+        }
 
-    def prime_dictionary(self, names, fetched_at=None):
-        """把字典缓存写好；默认时间戳是当前时刻，也就是未过期。"""
-        return write_dictionary_cache(
-            self.dictionary_of(self.dictionary_items(names)), fetched_at or now_moment()
-        )
+    def use_roster(self, names):
+        """把总表写成临时文件并让编排读它，返回文件路径。
+
+        编排按模块常量 ROSTER_PATH 找数据文件，这里把它指到临时文件；用例结束时还原，避免影响
+        其他用例，也绝不改动仓库里的那份数据文件。
+        """
+        path = os.path.join(self.temp.name, ROSTER_FILE_NAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.roster_snapshot(names), ensure_ascii=False) + "\n")
+        self.point_roster_at(path)
+        return path
+
+    def without_roster(self):
+        """把总表指到一个不存在的文件，模拟随仓库分发的数据文件缺失。"""
+        self.point_roster_at(os.path.join(self.temp.name, "missing-roster.json"))
+
+    def point_roster_at(self, path):
+        """把模块里的总表路径指到指定文件，并登记用例结束时的还原。"""
+        original = jwxt_classroom.ROSTER_PATH
+        jwxt_classroom.ROSTER_PATH = path
+        self.addCleanup(self.restore_roster_path, original)
+
+    def restore_roster_path(self, original):
+        """还原模块里的总表路径，避免影响其他用例。"""
+        jwxt_classroom.ROSTER_PATH = original
+
+    def assert_no_dictionary_request(self, client):
+        """断言整轮请求里只有父页与课表两个地址，没有教室字典接口 queryJs2。"""
+        self.assertTrue(client.calls)
+        for call in client.calls:
+            self.assertIn(call["url"], (CLASSROOM_PAGE_URL, CLASSROOM_IFR_URL))
+            self.assertNotIn("queryJs2", call["url"])
 
     def prime_semester(self, semester, names, fetched_at=None):
         """把某学期的教室名缓存写好；默认时间戳是当前时刻，也就是未过期。"""
@@ -2779,7 +2828,7 @@ class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
         return rooms
 
     def expired_moment(self):
-        """取一个早于 7 日的时刻：用它的缓存算过期，编排会去刷新这个学期或字典。"""
+        """取一个早于 7 日的时刻：用它的缓存算过期，编排会去刷新这个学期。"""
         return now_moment() - timedelta(days=CACHE_TTL_DAYS + 1)
 
     def semester_response(self, names):
@@ -2787,7 +2836,7 @@ class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
         return "200", classroom_table([data_row(name, {0}) for name in names])
 
     def query_response(self, rooms=None):
-        """拼一份本次查询的课表响应；不给 rooms 时放一行字典外教室，保证响应可解析。"""
+        """拼一份本次查询的课表响应；不给 rooms 时放一行全集外教室，保证响应可解析。"""
         picked = [(ORCH_SPARE_ROOM, set())] if rooms is None else list(rooms)
         return "200", classroom_table([data_row(name, occupied) for name, occupied in picked])
 
@@ -2805,14 +2854,14 @@ class ClassroomOrchestrationTestCase(ClassroomRequestTestCase):
 class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
     """任务 11.1 / 需求 2.2、2.6、8.1、8.5、8.6：编排顺序、缓存降级与会话中断。"""
 
-    def test_success_fills_all_four_cache_fields(self):
-        """一次全新查询：缓存缺失时逐个刷新，成功结果按实际来源填 cache 的四个字段。"""
+    def test_success_fills_the_cache_fields_and_reads_the_roster_file(self):
+        """一次全新查询：缓存缺失时逐个刷新，总表只读本地文件，cache 按实际来源填。"""
         rooms = orchestration_semester_rooms()
-        names = orchestration_dictionary_names()
+        names = orchestration_roster_names()
         occupied = rooms[SELECTED_SEMESTER][0]
+        self.use_roster(names)
         client = self.fake_client(
             ("200", parent_page()),
-            dictionary_body(self.dictionary_items(names)),
             self.semester_response(rooms[SELECTED_SEMESTER]),
             self.semester_response(rooms["2026-2027-2"]),
             self.semester_response(rooms["2026-2027-3"]),
@@ -2826,13 +2875,20 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
                 "semesters": EXPECTED_YEAR_SEMESTERS,
                 "refreshed_semesters": EXPECTED_YEAR_SEMESTERS,
                 "stale_semesters": [],
-                "stale_dictionary": False,
+                "roster": {
+                    "captured_at": ORCH_ROSTER_CAPTURED_AT,
+                    "record_count": len(names),
+                    "room_count": len(names),
+                },
             },
         )
         # 本学年没排过课的教室只给计数，当天有课的那间也要从结果里去掉。
         self.assertEqual(result["excluded_year_round_idle_count"], ORCH_IDLE_RANGE[1])
         self.assertEqual(result["count"], len(names) - ORCH_IDLE_RANGE[1] - 1)
         self.assertNotIn(occupied, [room["name"] for room in result["rooms"]])
+        # 父页一次、三个学期各一次、本次课表一次：总表不占任何请求。
+        self.assertEqual(len(client.calls), 5)
+        self.assert_no_dictionary_request(client)
         # 本次课表按周次与星期过滤，节次留空才能拿到整天 35 格。
         self.assertEqual(client.calls[-1]["url"], CLASSROOM_IFR_URL)
         form = request_form_fields(client.calls[-1])
@@ -2846,11 +2902,10 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
     def test_year_without_a_summer_semester_still_succeeds(self):
         """父页下拉里没有夏季时只拉秋与春，仍然能反推成功。"""
         rooms = orchestration_semester_rooms()
-        names = orchestration_dictionary_names()
+        self.use_roster(orchestration_roster_names())
         options = ("2026-2027-2", "2026-2027-1", "2025-2026-1")
         client = self.fake_client(
             ("200", parent_page(values=options)),
-            dictionary_body(self.dictionary_items(names)),
             self.semester_response(rooms[SELECTED_SEMESTER]),
             self.semester_response(rooms["2026-2027-2"]),
             self.query_response(),
@@ -2861,9 +2916,9 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         self.assertEqual(result["cache"]["refreshed_semesters"], ["2026-2027-1", "2026-2027-2"])
 
     def test_unexpired_caches_are_reused_without_extra_posts(self):
-        """缓存都在 7 日内时只发本次课表，不再为字典与学期发请求。"""
+        """缓存都在 7 日内时只读一次父页并只发本次课表，总表不产生任何请求。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.fake_client(("200", parent_page()), self.query_response())
         result = self.run_query(client)
         self.assertTrue(result["ok"])
@@ -2873,14 +2928,28 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         self.assertEqual(result["cache"]["semesters"], EXPECTED_YEAR_SEMESTERS)
         self.assertEqual(result["cache"]["refreshed_semesters"], [])
         self.assertEqual(result["cache"]["stale_semesters"], [])
-        self.assertFalse(result["cache"]["stale_dictionary"])
+        # cache 里不再有 stale_dictionary，改为总表快照的口径。
+        self.assertNotIn("stale_dictionary", result["cache"])
+        self.assertIn("roster", result["cache"])
+        self.assert_no_dictionary_request(client)
+
+    def test_incomplete_query_page_is_retried_once_then_succeeds(self):
+        """本次课表第一次不完整时丢弃重发，第二次拿到完整课表仍然成功。"""
+        self.prime_year()
+        self.use_roster(orchestration_roster_names())
+        client = self.fake_client(("200", parent_page()), truncated_body(), self.query_response())
+        result = self.run_query(client)
+        self.assertTrue(result["ok"])
+        # 父页一次 + 不完整的那次 + 完整的那次。
+        self.assertEqual(len(client.calls), 3)
+        self.assert_no_dictionary_request(client)
 
     def test_semester_refresh_failure_keeps_an_unexpired_cache(self):
         """某学期刷新失败、但缓存已被别的进程刷新好时继续，并把该学期记进 stale_semesters。"""
         rooms = orchestration_semester_rooms()
-        names = orchestration_dictionary_names()
+        names = orchestration_roster_names()
         spring = "2026-2027-2"
-        self.prime_dictionary(names)
+        self.use_roster(names)
         # 秋、夏用未过期缓存；春季缓存过期，会去刷新。
         self.prime_semester(SELECTED_SEMESTER, rooms[SELECTED_SEMESTER])
         self.prime_semester("2026-2027-3", rooms["2026-2027-3"])
@@ -2906,45 +2975,40 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["cache"]["stale_semesters"], [spring])
         self.assertEqual(result["cache"]["refreshed_semesters"], [])
-        self.assertFalse(result["cache"]["stale_dictionary"])
+        self.assertNotIn("stale_dictionary", result["cache"])
         # 春季的 200 间教室照样算进候选集，说明用的是那份未过期的缓存。
         self.assertEqual(result["count"], len(names) - ORCH_IDLE_RANGE[1])
         self.assertEqual(len(client.calls), 5)
 
-    def test_truncated_dictionary_list_keeps_an_unexpired_cache(self):
-        """字典名单被 maxRow 截断时不用该次响应，未过期的旧字典可以继续并标记 stale_dictionary。"""
+    def test_missing_roster_falls_back_to_the_schedule_names(self):
+        """总表文件缺失时用本学年课表首格当全集，并在 warnings 里说明 jsid 不可用。"""
+        rooms = orchestration_semester_rooms()
         self.prime_year()
-        new_names = orchestration_dictionary_names()
-        self.prime_dictionary(new_names[:1], self.expired_moment())
-
-        def writer():
-            """模拟另一个进程在这段时间把字典刷新好。"""
-            self.prime_dictionary(new_names)
-
-        client = CacheRefreshingClient(
-            [
-                ("200", parent_page()),
-                dictionary_body([{"jsid": "JSID-X", "jsmc": "格物楼101"}] * DICTIONARY_MAX_ROW),
-                self.query_response(),
-            ],
-            "maxRow",
-            str(DICTIONARY_MAX_ROW),
-            writer,
-        )
+        self.without_roster()
+        client = self.fake_client(("200", parent_page()), self.query_response())
         result = self.run_query(client)
         self.assertTrue(result["ok"])
-        self.assertTrue(result["cache"]["stale_dictionary"])
-        # 教室全集来自那份未过期的字典：全年无课的教室数只能是新字典里的那几间。
-        self.assertEqual(result["excluded_year_round_idle_count"], ORCH_IDLE_RANGE[1])
-        self.assertEqual(result["count"], len(new_names) - ORCH_IDLE_RANGE[1])
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(
+            result["cache"]["roster"], {"captured_at": "", "record_count": 0, "room_count": 0}
+        )
+        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+        self.assertEqual(
+            result["count"], sum(len(rooms[semester]) for semester in EXPECTED_YEAR_SEMESTERS)
+        )
+        # jsid 只来自内置总表：总表不在时每间教室都没有身份，查询仍然成功。
+        for room in result["rooms"]:
+            self.assertEqual(room["jsid"], "")
+        warning_text = " ".join(result["warnings"])
+        self.assertIn(ROSTER_UNAVAILABLE_WARNING, warning_text)
+        self.assertIn("jsid", warning_text)
+        self.assertEqual(len(client.calls), 2)
+        self.assert_no_dictionary_request(client)
 
     def test_semester_without_any_usable_cache_stops(self):
         """某学期刷不出来又没有可用缓存时停下，说明全年无课名单不完整。"""
-        names = orchestration_dictionary_names()
+        self.use_roster(orchestration_roster_names())
         client = self.fake_client(
             ("200", parent_page()),
-            dictionary_body(self.dictionary_items(names)),
             truncated_transfer(),
             truncated_transfer(),
             truncated_transfer(),
@@ -2952,13 +3016,13 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         result = self.run_query(client)
         self.assert_failure(result, "全年无课名单不完整")
         # 秋季 3 次都断线后立刻停下，不再拉春季与夏季，也不发本次课表。
-        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(client.calls), 4)
         self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
 
     def test_expired_semester_cache_is_not_usable(self):
         """某学期只有过期缓存、刷新又失败时停下：过期缓存不算可用。"""
         rooms = orchestration_semester_rooms()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         self.prime_semester(SELECTED_SEMESTER, rooms[SELECTED_SEMESTER], self.expired_moment())
         client = self.fake_client(
             ("200", parent_page()),
@@ -2973,33 +3037,20 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
         kept = read_semester_cache(SELECTED_SEMESTER)
         self.assertEqual(kept["room_count"], ORCH_AUTUMN_RANGE[1])
 
-    def test_expired_dictionary_is_not_usable_when_the_list_is_truncated(self):
-        """字典只有过期缓存、刷新又拿到截断名单时停下：过期缓存不算可用。"""
-        self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names()[:1], self.expired_moment())
-        client = self.fake_client(
-            ("200", parent_page()),
-            dictionary_body([{"jsid": "JSID-X", "jsmc": "格物楼101"}] * DICTIONARY_MAX_ROW),
-        )
-        result = self.run_query(client)
-        self.assert_failure(result, "截断")
-        # 字典这一步就停下，学期与本次课表都不再请求。
-        self.assertEqual(len(client.calls), 2)
 
     def test_session_loss_stops_later_posts_and_keeps_validated_caches(self):
         """拉学期中途变成登录页时停止后续 POST，已经写盘的秋季缓存保持原样。"""
         rooms = orchestration_semester_rooms()
-        names = orchestration_dictionary_names()
+        self.use_roster(orchestration_roster_names())
         client = self.fake_client(
             ("200", parent_page()),
-            dictionary_body(self.dictionary_items(names)),
             self.semester_response(rooms[SELECTED_SEMESTER]),
             ("200", LOGIN_PAGE),
         )
         result = self.run_query(client)
         self.assert_failure(result, "登录页", "重新登录")
         # 秋季已经通过校验并写盘；春季拿到的登录页不写缓存，夏季与本次课表都不再请求。
-        self.assertEqual(len(client.calls), 4)
+        self.assertEqual(len(client.calls), 3)
         kept = read_semester_cache(SELECTED_SEMESTER)
         self.assertEqual(kept["room_count"], ORCH_AUTUMN_RANGE[1])
         self.assertIsNone(read_semester_cache("2026-2027-2"))
@@ -3008,7 +3059,7 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
     def test_session_kick_on_the_query_page_fails_without_rooms(self):
         """本次课表拿到互踢提示时失败且没有 rooms，缓存不受影响。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.fake_client(("200", parent_page()), ("200", SESSION_KICKED_PAGE))
         result = self.run_query(client)
         self.assert_failure(result, "互踢", "重新登录")
@@ -3041,7 +3092,7 @@ class ClassroomOrchestrationTest(ClassroomOrchestrationTestCase):
     def test_each_query_refreshes_its_resources_again(self):
         """同一会话连续查两次：两次都重读父页并重发本次课表，说明每次都清了刷新记录。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.fake_client(
             ("200", parent_page()),
             self.query_response(),
@@ -3107,7 +3158,7 @@ class ClassroomFailurePagePropertyTest(ClassroomOrchestrationTestCase):
         # 父页位置：父页 GET 直接拿到失败页，后面的请求都不该发生。
         if position == PARENT_POSITION:
             return self.fake_client(*pages)
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         rooms = orchestration_semester_rooms()
         # 学期位置：让秋季没有缓存，失败页就落在秋季那次 POST 上。
         if position == SEMESTER_POSITION:
@@ -3451,7 +3502,7 @@ class ClassroomCliQueryTest(ClassroomCliTestCase):
     def test_success_reads_result_fields_and_sends_one_single_day_request(self):
         """一次成功查询：结果字段齐全，本次课表只发一次且两个星期字段同值。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         rooms = orchestration_semester_rooms()
         occupied = rooms[SELECTED_SEMESTER][0]
         client = self.use_client(
@@ -3504,7 +3555,7 @@ class ClassroomCliQueryTest(ClassroomCliTestCase):
     def test_missing_period_end_equals_period_start(self):
         """省略 --period-end 时结束大节等于 --period-start，覆盖块按整块取。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.use_client(self.fake_client(("200", parent_page()), self.query_response()))
         code, body = self.run_cli(
             "classrooms",
@@ -3598,7 +3649,7 @@ class ClassroomCliWeekTest(ClassroomCliTestCase):
     def test_missing_week_probes_and_queries_that_week(self):
         """省略 --week 时先探主页，再用探到的周次查课表，zc1 与 zc2 都是它。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.use_client(
             self.fake_client(("200", WEEK_PAGE), ("200", parent_page()), self.query_response())
         )
@@ -3622,7 +3673,7 @@ class ClassroomCliWeekTest(ClassroomCliTestCase):
     def test_explicit_week_never_requests_the_profile_page(self):
         """显式 --week 时用给的值，第一个请求就是教室课表父页，没有探测这一步。"""
         self.prime_year()
-        self.prime_dictionary(orchestration_dictionary_names())
+        self.use_roster(orchestration_roster_names())
         client = self.use_client(
             self.fake_client(("200", parent_page()), self.query_response())
         )
