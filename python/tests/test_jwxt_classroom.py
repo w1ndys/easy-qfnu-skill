@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import os
 import random
@@ -8,6 +9,8 @@ import unittest
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
+from qfnu import jwxt
+from qfnu.jwxt import run_jwxt
 from qfnu.jwxt_classroom import (
     BLOCK_NOTE_TEXT,
     BLOCK_START_BOUNDS,
@@ -77,7 +80,8 @@ from qfnu.jwxt_classroom import (
     year_round_idle_rooms,
     year_semester_list,
 )
-from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, state_dir
+from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, JWXTClient, state_dir
+from qfnu.result import failure, success
 
 # 父页学期下拉的固定样本：含别的学年、未来学年与格式不符的项。
 SEMESTER_OPTIONS = (
@@ -3131,7 +3135,448 @@ class ClassroomFailurePagePropertyTest(ClassroomOrchestrationTestCase):
         return 1 + attempts
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+# 子命令用例：classrooms 动作把选项交给编排层，再按空闲开关在本地过滤结果。
+
+# 五个大节块名：教室整天没课时 free_blocks 就是这一串。
+CLI_BLOCK_NAMES = ("0102", "030405", "0607", "0809", "101112")
+
+# 假编排给出的第一间教室：这一天整天没课，四个空闲字段都是 true。
+CLI_IDLE_ROOM = {
+    "name": "格物楼B101",
+    "jsid": "JSID-CLI-1",
+    "status": ROOM_STATUS,
+    "status_text": ROOM_STATUS_TEXT,
+    "free_all_day": True,
+    "free_morning": True,
+    "free_afternoon": True,
+    "free_evening": True,
+    "free_blocks": ["0102", "030405", "0607", "0809", "101112"],
+    "occupied_blocks": [],
+    "last_free_period": 12,
+    "source_names": ["格物楼B101"],
+}
+
+# 假编排给出的第二间教室：上午有课，下午与晚上空闲，用来区分单时段开关。
+CLI_AFTERNOON_ROOM = {
+    "name": "数学楼401",
+    "jsid": "JSID-CLI-2",
+    "status": ROOM_STATUS,
+    "status_text": ROOM_STATUS_TEXT,
+    "free_all_day": False,
+    "free_morning": False,
+    "free_afternoon": True,
+    "free_evening": True,
+    "free_blocks": ["0607", "0809", "101112"],
+    "occupied_blocks": ["0102", "030405"],
+    "last_free_period": 12,
+    "source_names": ["数学楼401"],
+}
+
+# 假编排默认交出的两间教室，顺序就是结果里的顺序。
+CLI_ROOMS = (CLI_IDLE_ROOM, CLI_AFTERNOON_ROOM)
+
+
+def cli_success(rooms=None):
+    """拼一份成功信封：字段与设计 Data Models 一致，供假编排直接返回。"""
+    picked = list(CLI_ROOMS) if rooms is None else list(rooms)
+    return success(
+        "jwxt",
+        {
+            "semester": SELECTED_SEMESTER,
+            "week_start": ORCH_WEEK,
+            "week_end": ORCH_WEEK,
+            "weekday": ORCH_WEEKDAY,
+            "weekday_name": "星期三",
+            "period_start": 1,
+            "period_end": 2,
+            "blocks": [ORCH_BLOCK],
+            "keyword": "",
+            "skjs": "",
+            "limitation": LIMITATION_TEXT,
+            "block_note": BLOCK_NOTE_TEXT,
+            "excluded_year_round_idle_count": 0,
+            "count": len(picked),
+            "rooms": picked,
+            "cache": {},
+            "warnings": [],
+        },
+    )
+
+
+class FakeOrchestration:
+    """假编排函数：记录收到的参数，按队列交出结果信封，一个上游请求都不发。"""
+
+    def __init__(self, results):
+        # 逐次调用要交出的结果信封。
+        self.results = list(results)
+        # 每次调用收到的参数，供用例断言 CLI 读到了哪些选项。
+        self.calls = []
+
+    def __call__(
+        self, client, semester, week_start, week_end, weekday, period_start, period_end, keyword=""
+    ):
+        """按 query_empty_classrooms 的签名收参数并记录，再交出下一个结果信封。"""
+        self.calls.append(
+            {
+                "client": client,
+                "semester": semester,
+                "week_start": week_start,
+                "week_end": week_end,
+                "weekday": weekday,
+                "period_start": period_start,
+                "period_end": period_end,
+                "keyword": keyword,
+            }
+        )
+        # 队列里没有结果说明动作多调了一次编排，直接报错而不是继续编造结果。
+        if not self.results:
+            raise AssertionError("unexpected extra orchestration call")
+        return self.results.pop(0)
+
+
+class ClassroomCliTestCase(ClassroomOrchestrationTestCase):
+    """子命令用例的共同部分：临时会话文件、假编排替身与假客户端。"""
+
+    def setUp(self):
+        """先按编排用例备好临时缓存目录，再写一个空会话文件给真实客户端加载。"""
+        super().setUp()
+        self.session_path = os.path.join(self.temp.name, "session.json")
+        with open(self.session_path, "w", encoding="utf-8") as handle:
+            handle.write('{"cookies":[]}\n')
+        self.original_orchestration = jwxt.query_empty_classrooms
+        self.addCleanup(self.restore_orchestration)
+
+    def restore_orchestration(self):
+        """还原模块里的编排函数，避免影响其他用例。"""
+        jwxt.query_empty_classrooms = self.original_orchestration
+
+    def fake_orchestration(self, *results):
+        """把编排换成替身：按顺序交出结果信封，并记录每次收到的参数。"""
+        fake = FakeOrchestration(results)
+        jwxt.query_empty_classrooms = fake
+        return fake
+
+    def run_cli(self, action, *options):
+        """按命令行入口跑一次 jwxt 子命令，返回 (退出码, 结果信封)。"""
+        out = io.StringIO()
+        args = [action, "--session-path", self.session_path] + list(options)
+        return run_jwxt(args, out), json.loads(out.getvalue())
+
+    def use_client(self, client):
+        """把真实客户端的 text 转交给假客户端：CLI 也走同一条拼好的响应序列。"""
+        original_text = JWXTClient.text
+
+        def fake_text(self, method, target, body=None, headers=None, same_origin=False):
+            """按真实签名收下参数后原样转交，绝不发真实网络请求。"""
+            del self
+            return client.text(method, target, body, headers, same_origin)
+
+        JWXTClient.text = fake_text
+        self.addCleanup(self.restore_client_text, original_text)
+        return client
+
+    def restore_client_text(self, original_text):
+        """还原客户端的 text 方法，避免影响其他用例。"""
+        JWXTClient.text = original_text
+
+
+class ClassroomCliOptionTest(ClassroomCliTestCase):
+    """任务 12.1 / 需求 6.1、6.2、6.5：classrooms 的选项、空闲开关与其他动作的隔离。"""
+
+    def test_command_table_lists_classrooms(self):
+        """classrooms 出现在命令表与用法文本里，摘要与 kind 符合约定。"""
+        entry = jwxt.jwxt_command("classrooms")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["summary"], "查询不上课教室")
+        self.assertEqual(entry["kind"], "action")
+        self.assertIsNotNone(entry["run"])
+        out = io.StringIO()
+        self.assertEqual(jwxt.usage_jwxt(out), 2)
+        self.assertIn("classrooms", out.getvalue())
+
+    def test_options_are_passed_to_the_orchestration(self):
+        """学期、周次范围、星期、大节范围与关键词原样交给编排，客户端也一起传下去。"""
+        fake = self.fake_orchestration(cli_success())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", "2026-2027-1",
+            "--week", "6",
+            "--week-end", "9",
+            "--weekday", "3",
+            "--period-start", "1",
+            "--period-end", "5",
+            "--keyword", "数学楼",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        # 只调一次编排：一个开关都没给时 CLI 不再做别的事。
+        self.assertEqual(len(fake.calls), 1)
+        call = fake.calls[0]
+        self.assertIsInstance(call["client"], JWXTClient)
+        self.assertEqual(call["semester"], "2026-2027-1")
+        self.assertEqual(call["week_start"], "6")
+        self.assertEqual(call["week_end"], "9")
+        self.assertEqual(call["weekday"], "3")
+        self.assertEqual(call["period_start"], "1")
+        self.assertEqual(call["period_end"], "5")
+        self.assertEqual(call["keyword"], "数学楼")
+
+    def test_missing_range_end_is_passed_as_empty(self):
+        """省略 --week-end 与 --period-end 时按空串交给编排，由编排补齐成起始值。"""
+        fake = self.fake_orchestration(cli_success())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        self.assertEqual(fake.calls[0]["week_end"], "")
+        self.assertEqual(fake.calls[0]["period_end"], "")
+
+    def test_free_switches_only_filter_the_result(self):
+        """四个开关各自与组合只筛 rooms 并重算 count，其余字段与未过滤时完全一致。"""
+        baseline = self.switch_case()[0]
+        self.assertEqual(baseline["count"], len(CLI_ROOMS))
+        cases = (
+            ((), ("格物楼B101", "数学楼401")),
+            (("--free-all-day",), ("格物楼B101",)),
+            (("--free-morning",), ("格物楼B101",)),
+            (("--free-afternoon",), ("格物楼B101", "数学楼401")),
+            (("--free-evening",), ("格物楼B101", "数学楼401")),
+            (("--free-morning", "--free-evening"), ("格物楼B101",)),
+        )
+        for switches, expected in cases:
+            with self.subTest(switches=switches):
+                body, calls = self.switch_case(*switches)
+                # 过滤只做筛选：留下的教室按原顺序、字段也一个不改写。
+                self.assertEqual([room["name"] for room in body["rooms"]], list(expected))
+                self.assertEqual(body["count"], len(expected))
+                # 开关不得触发第二次上游请求：编排只被调用一次。
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(self.without_rooms(body), self.without_rooms(baseline))
+
+    def switch_case(self, *switches):
+        """按给定空闲开关跑一次 CLI，返回 (结果信封, 编排收到的参数列表)。"""
+        fake = self.fake_orchestration(cli_success())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+            *switches,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        return body, fake.calls
+
+    def without_rooms(self, body):
+        """取信封里除 rooms 与 count 之外的字段，用来断言过滤没动别的字段。"""
+        return {key: value for key, value in body.items() if key not in ("rooms", "count")}
+
+    def test_failure_result_is_not_filtered(self):
+        """编排失败时原样交出 ok=false、error 与 hint，空闲开关不会补上 rooms 或 count。"""
+        fake = self.fake_orchestration(
+            failure("jwxt", "全年无课名单不完整: semester=" + SELECTED_SEMESTER, "请稍后重试")
+        )
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+            "--free-all-day",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("全年无课名单不完整", body["error"])
+        self.assertEqual(body["hint"], "请稍后重试")
+        self.assertNotIn("rooms", body)
+        self.assertNotIn("count", body)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_weekday_end_is_not_an_option(self):
+        """本功能只查单天：CLI 不提供 --weekday-end，给出它按未知选项拒绝。"""
+        fake = self.fake_orchestration(cli_success())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", "3",
+            "--period-start", "1",
+            "--weekday-end", "5",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("unknown option: --weekday-end", body["error"])
+        # 参数没解析成功就不该走到编排，更不该发上游请求。
+        self.assertEqual(fake.calls, [])
+
+    def test_other_actions_ignore_the_new_options(self):
+        """grades 拿到新选项时行为不变：新字段根本不参与它的调用。"""
+        original_grades = jwxt.grades
+        semesters = []
+
+        def fake_grades(client, semester):
+            """假成绩查询：只记下收到的学期，证明新选项没有被传进来。"""
+            del client
+            semesters.append(semester)
+            return success("jwxt", {"items": []})
+
+        jwxt.grades = fake_grades
+        self.addCleanup(self.restore_grades, original_grades)
+        code, body = self.run_cli(
+            "grades",
+            "--weekday", "3",
+            "--week-end", "9",
+            "--period-start", "4",
+            "--free-all-day",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        self.assertEqual(semesters, [""])
+
+    def restore_grades(self, original_grades):
+        """还原模块里的成绩查询，避免影响其他用例。"""
+        jwxt.grades = original_grades
+
+
+class ClassroomCliQueryTest(ClassroomCliTestCase):
+    """任务 12.1 / 需求 3.11、3.12、3.13、6.5：classrooms 走真实编排时的请求与结果。"""
+
+    def test_success_reads_result_fields_and_sends_one_single_day_request(self):
+        """一次成功查询：结果字段齐全，本次课表只发一次且两个星期字段同值。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        rooms = orchestration_semester_rooms()
+        occupied = rooms[SELECTED_SEMESTER][0]
+        client = self.use_client(
+            self.fake_client(
+                ("200", parent_page()),
+                self.query_response([(occupied, {block_cell_index(ORCH_WEEKDAY, ORCH_BLOCK)})]),
+            )
+        )
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["semester"], SELECTED_SEMESTER)
+        self.assertEqual(body["week_start"], ORCH_WEEK)
+        self.assertEqual(body["week_end"], ORCH_WEEK)
+        self.assertEqual(body["weekday"], ORCH_WEEKDAY)
+        self.assertEqual(body["weekday_name"], "星期三")
+        self.assertEqual(body["period_start"], 1)
+        self.assertEqual(body["period_end"], 1)
+        self.assertEqual(body["blocks"], [ORCH_BLOCK])
+        self.assertEqual(body["limitation"], LIMITATION_TEXT)
+        self.assertEqual(body["block_note"], BLOCK_NOTE_TEXT)
+        self.assertEqual(body["count"], len(body["rooms"]))
+        self.assertTrue(body["count"] > 0)
+        # 当天有课的那间被减掉；其余教室没出现在响应里，按整天没课给出空闲信息。
+        self.assertNotIn(occupied, [room["name"] for room in body["rooms"]])
+        for room in body["rooms"]:
+            self.assertTrue(room["free_all_day"])
+            self.assertTrue(room["free_morning"])
+            self.assertTrue(room["free_afternoon"])
+            self.assertTrue(room["free_evening"])
+            self.assertEqual(room["free_blocks"], list(CLI_BLOCK_NAMES))
+            self.assertEqual(room["occupied_blocks"], [])
+            self.assertEqual(room["last_free_period"], 12)
+        # 本次课表只发一次，星期写成同一个值，节次留空以取整天 35 格。
+        self.assertEqual(client.calls[-1]["url"], CLASSROOM_IFR_URL)
+        form = request_form_fields(client.calls[-1])
+        self.assertEqual(form["zc1"], str(ORCH_WEEK))
+        self.assertEqual(form["zc2"], str(ORCH_WEEK))
+        self.assertEqual(form["skxq1"], str(ORCH_WEEKDAY))
+        self.assertEqual(form["skxq2"], str(ORCH_WEEKDAY))
+        self.assertEqual(form["jc1"], "")
+        self.assertEqual(form["jc2"], "")
+
+    def test_missing_period_end_equals_period_start(self):
+        """省略 --period-end 时结束大节等于 --period-start，覆盖块按整块取。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.use_client(self.fake_client(("200", parent_page()), self.query_response()))
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--week-end", str(ORCH_WEEK + 1),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "3",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["period_start"], 3)
+        self.assertEqual(body["period_end"], 3)
+        self.assertEqual(body["blocks"], ["030405"])
+        self.assertEqual(body["week_start"], ORCH_WEEK)
+        self.assertEqual(body["week_end"], ORCH_WEEK + 1)
+        form = request_form_fields(client.calls[-1])
+        self.assertEqual(form["zc1"], str(ORCH_WEEK))
+        self.assertEqual(form["zc2"], str(ORCH_WEEK + 1))
+
+    def test_off_block_period_start_is_rejected_without_any_request(self):
+        """--period-start 4 不在块首：CLI 报参数失败，一个上游请求都不发。"""
+        client = self.use_client(self.fake_client())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "4",
+            "--period-end", "4",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("period_start=4", body["error"])
+        self.assertNotIn("rooms", body)
+        self.assertTrue(body["hint"])
+        self.assertEqual(client.calls, [])
+
+    def test_reversed_week_range_is_rejected_without_any_request(self):
+        """起始周次大于结束周次时同样在发请求前停下。"""
+        client = self.use_client(self.fake_client())
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", "9",
+            "--week-end", "6",
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("起始周次不能大于结束周次", body["error"])
+        self.assertNotIn("rooms", body)
+        self.assertEqual(client.calls, [])
+
+    def test_session_kick_on_the_parent_page_fails_without_rooms(self):
+        """父页拿到互踢提示时 CLI 仍是 ok=false + error + hint，且不含 rooms。"""
+        client = self.use_client(self.fake_client(("200", SESSION_KICKED_PAGE)))
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertNotIn("rooms", body)
+        self.assertTrue(body["error"])
+        self.assertIn("重新登录", body["hint"])
+        # 互踢提示是完整页面，重试也一样，所以只读了一次父页。
+        self.assertEqual(len(client.calls), 1)
+
 if __name__ == "__main__":
     unittest.main()
