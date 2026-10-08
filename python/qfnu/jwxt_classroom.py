@@ -39,6 +39,20 @@ PARAM_HINT = "使用 --semester、--week、--weekday、--period-start、--period
 
 # 全角数字与半角数字的对应表，只用于名称规范化。
 DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+# 房号：末尾的字母头加数字，可选字母尾缀；它前面的部分算楼栋前缀。
+ROOM_NUMBER_RE = re.compile(r"[A-Za-z]*\d+[A-Za-z]?$")
+
+# 房号开头的字母头，用来给「只有数字」的后项补字母。
+ROOM_HEAD_RE = re.compile(r"[A-Za-z]*")
+
+# 合称分隔符：顿号、半角句点和空白。
+ROOM_SEPARATOR_RE = re.compile(r"[、.\s]+")
+
+# 一个周次表达式：A-B周 是闭区间，A周 是单周；越界或倒置的表达式丢弃。
+WEEK_EXPRESSION_RE = re.compile(r"(\d+)(?:\s*-\s*(\d+))?\s*周")
+
+# 一个周次都解析不出时按整学期处理，周次全集的上下界取 WEEK_RANGE。
+WEEK_FULL_RANGE = range(WEEK_RANGE[0], WEEK_RANGE[1] + 1)
 
 
 def parse_semester(value):
@@ -103,6 +117,79 @@ def normalize_room_name(name):
     text = str(name if name is not None else "").translate(DIGIT_TRANSLATION)
     # split() 会把全角空格和不换行空格也切开，再用半角空格拼回。
     return " ".join(text.split())
+
+def split_room_range(chunk):
+    """按 `-` 切开一个片段；只要有一侧取不出房号，就整段保留。
+
+    不补中间房号：`数学楼401-403` 只得到 401 与 403，不会多出 402。
+    """
+    # 没有连字符的片段原样返回。
+    if "-" not in chunk:
+        return [chunk]
+    pieces = chunk.split("-")
+    # 两侧都能取出房号才切开，否则整段留给展开阶段当楼栋前缀处理。
+    if any(ROOM_NUMBER_RE.search(piece) is None for piece in pieces):
+        return [chunk]
+    return pieces
+
+
+def split_room_parts(name):
+    """把合称展示名切成片段：先去首尾空白，再按顿号、句点和空白切开。"""
+    parts = []
+    for chunk in ROOM_SEPARATOR_RE.split(str(name if name is not None else "").strip()):
+        # 连续分隔符会切出空片段，空片段不参与展开。
+        if not chunk:
+            continue
+        parts.extend(split_room_range(chunk))
+    return parts
+
+
+def expand_room_name(name):
+    """把合称展示名展开成单体教室，返回 name、rooms 与 expanded。
+
+    房号是片段末尾的 `[A-Za-z]*\\d+[A-Za-z]?`，其余是楼栋前缀。后项只有数字和
+    可选尾缀时补上前一项的房号字母头，后项已带字母头时只继承楼栋前缀。展开不出
+    任何房号时 expanded 为 False、rooms 为空，原始展示名只能进警告，不得放进不上课结果。
+    """
+    display = str(name if name is not None else "").strip()
+    rooms = []
+    prefix = ""
+    head = ""
+    for part in split_room_parts(display):
+        match = ROOM_NUMBER_RE.search(part)
+        # 片段末尾没有房号时它是楼栋前缀，留给后面的片段继承。
+        if match is None:
+            prefix = part
+            continue
+        number = match.group(0)
+        own_prefix = part[: match.start()]
+        # 片段自带楼栋前缀时以它为准，否则沿用前一片段留下的楼栋前缀。
+        if own_prefix:
+            prefix = own_prefix
+        own_head = ROOM_HEAD_RE.match(number).group(0)
+        # 片段已带字母头时只继承楼栋前缀，不覆盖自己的字母。
+        if own_head:
+            head = own_head
+        # 只有数字和可选尾缀时补上前一片段的房号字母头，例如 F101-102 得到 F102。
+        else:
+            number = head + number
+        rooms.append(prefix + number)
+    return {"name": display, "rooms": rooms, "expanded": bool(rooms)}
+
+
+def expand_record(jsid, jsmc):
+    """展开一条字典记录，返回 jsid、jsmc、rooms、source_jsid 与 expanded。
+
+    合称记录的 jsid 只记在 source_jsid 上，不按展开出的教室拆成多个 ID。
+    """
+    expanded = expand_room_name(jsmc)
+    return {
+        "jsid": jsid,
+        "jsmc": expanded["name"],
+        "rooms": expanded["rooms"],
+        "source_jsid": jsid,
+        "expanded": expanded["expanded"],
+    }
 
 
 def validate_query(semester, week, weekday, period_start, period_end, keyword=""):
@@ -191,3 +278,54 @@ def query_cells(period_start, period_end):
                 }
             )
     return cells
+
+
+def week_qualifier(text):
+    """取课程块里的单双限定词，返回「单」「双」或空串。
+
+    单和双同时出现在一个块里时无法判断各自作用的区间，按不加限定处理，宁可当作
+    有课，也不漏掉占用。
+    """
+    content = str(text if text is not None else "")
+    odd = "单" in content
+    even = "双" in content
+    # 两者都出现（或都没有）时不加过滤。
+    if odd == even:
+        return ""
+    return "单" if odd else "双"
+
+
+def filter_weeks(weeks, qualifier):
+    """按限定词过滤周次：单留奇数周，双留偶数周，没有限定词原样返回。"""
+    # 单：只留奇数周。
+    if qualifier == "单":
+        return {week for week in weeks if week % 2 == 1}
+    # 双：只留偶数周。
+    if qualifier == "双":
+        return {week for week in weeks if week % 2 == 0}
+    return set(weeks)
+
+
+def parse_weeks(text):
+    """从课程块文本解析周次，返回 (周次列表, 是否一个都没解析出来)。
+
+    `A-B周` 是闭区间，`A周` 是单周，逗号或顿号连接多个表达式取并集；单双限定词
+    作用于该块已解析出的周次，块里没有可用区间时作用于 1 到 30。一个周次都解析
+    不出来时按 1 到 30 全算有课，并让 weeks_unparsed 为 true。
+    """
+    weeks = set()
+    for match in WEEK_EXPRESSION_RE.finditer(str(text if text is not None else "")):
+        start = parse_bound(match.group(1), *WEEK_RANGE)
+        end = parse_bound(match.group(2), *WEEK_RANGE) if match.group(2) else start
+        # 端点越界或区间倒置的表达式直接丢弃，不猜它想表示哪几周。
+        if start is None or end is None or start > end:
+            continue
+        weeks.update(range(start, end + 1))
+    qualifier = week_qualifier(text)
+    # 限定词没有可作用的区间时作用于 1 到 30。
+    if qualifier:
+        weeks = filter_weeks(weeks or set(WEEK_FULL_RANGE), qualifier)
+    # 一个周次都没解析出来时按整学期处理，调用方据此保守判断该块有课。
+    if not weeks:
+        return list(WEEK_FULL_RANGE), True
+    return sorted(weeks), False

@@ -2,9 +2,12 @@ import unittest
 
 from qfnu.jwxt_classroom import (
     PERIOD_BLOCKS,
+    expand_record,
+    expand_room_name,
     expected_block_names,
     normalize_room_name,
     parse_semester,
+    parse_weeks,
     query_blocks,
     query_cells,
     semester_window,
@@ -245,6 +248,131 @@ class ClassroomBlockAndNameTest(unittest.TestCase):
     def test_normalize_room_name_keeps_letter_suffix_rooms_apart(self):
         self.assertNotEqual(normalize_room_name("JC1003"), normalize_room_name("JC1003a"))
         self.assertEqual(normalize_room_name("JC1003a"), "JC1003a")
+
+
+class ClassroomRoomExpansionTest(unittest.TestCase):
+    """任务 2.1：合称展开，供字典 jsmc 与课表行首名称共用。"""
+
+    def rooms_of(self, name):
+        """取展开出的单体教室，并断言这次展开成功。"""
+        expanded = expand_room_name(name)
+        self.assertTrue(expanded["expanded"], name)
+        return expanded["rooms"]
+
+    def test_dunhao_expands_to_two_rooms(self):
+        self.assertEqual(self.rooms_of("数学楼401、403"), ["数学楼401", "数学楼403"])
+
+    def test_dunhao_expansion_does_not_add_middle_rooms(self):
+        self.assertNotIn("数学楼402", self.rooms_of("数学楼401、403"))
+
+    def test_fullwidth_separator_is_not_a_separator(self):
+        """设计只把顿号、半角句点和空白当分隔符，全角句点不参与切开。"""
+        self.assertEqual(self.rooms_of("化学楼127.129"), ["化学楼127", "化学楼129"])
+
+    def test_hyphen_inherits_letter_head_from_previous_room(self):
+        self.assertEqual(self.rooms_of("F101-102"), ["F101", "F102"])
+
+    def test_hyphen_keeps_letter_head_written_in_second_room(self):
+        self.assertEqual(self.rooms_of("F128-F129"), ["F128", "F129"])
+
+    def test_hyphen_expansion_does_not_add_middle_rooms(self):
+        self.assertEqual(self.rooms_of("数学楼401-403"), ["数学楼401", "数学楼403"])
+
+    def test_dunhao_inherits_building_prefix(self):
+        self.assertEqual(
+            self.rooms_of("实验中心B区B104、B106"),
+            ["实验中心B区B104", "实验中心B区B106"],
+        )
+
+    def test_single_room_name_stays_single(self):
+        self.assertEqual(self.rooms_of("格物楼B101"), ["格物楼B101"])
+        self.assertEqual(self.rooms_of("  格物楼B101  "), ["格物楼B101"])
+        self.assertEqual(self.rooms_of("数学楼 401"), ["数学楼401"])
+
+    def test_hyphen_is_kept_when_one_side_has_no_room_number(self):
+        """`-` 只在两侧都能取出房号时切开，南-101 整体当作一个展示名。"""
+        self.assertEqual(self.rooms_of("北-101"), ["北-101"])
+
+    def test_letter_suffix_rooms_stay_two_rooms(self):
+        self.assertEqual(self.rooms_of("JC1003"), ["JC1003"])
+        self.assertEqual(self.rooms_of("JC1003a"), ["JC1003a"])
+        self.assertNotEqual(self.rooms_of("JC1003"), self.rooms_of("JC1003a"))
+
+    def test_unexpandable_name_is_flagged_and_kept_for_warning(self):
+        """展开失败时保留原始展示名，rooms 为空，调用方不得把它放进不上课结果。"""
+        expanded = expand_room_name("演播厅")
+        self.assertFalse(expanded["expanded"])
+        self.assertEqual(expanded["rooms"], [])
+        self.assertEqual(expanded["name"], "演播厅")
+
+    def test_empty_name_is_unexpandable(self):
+        for value in ("", "   ", None):
+            expanded = expand_room_name(value)
+            self.assertFalse(expanded["expanded"])
+            self.assertEqual(expanded["rooms"], [])
+
+    def test_record_keeps_jsid_in_source_jsid(self):
+        """合称记录的 jsid 只记在 source_jsid 上，不拆成多个 ID。"""
+        record = expand_record("DB3511C3DF574E3A", "数学楼401、403")
+        self.assertEqual(record["rooms"], ["数学楼401", "数学楼403"])
+        self.assertEqual(record["source_jsid"], "DB3511C3DF574E3A")
+        self.assertEqual(record["jsid"], record["source_jsid"])
+        self.assertTrue(record["expanded"])
+
+    def test_unexpandable_record_has_no_rooms(self):
+        record = expand_record("JSID-1", " 演播厅 ")
+        self.assertEqual(record["rooms"], [])
+        self.assertFalse(record["expanded"])
+        self.assertEqual(record["jsmc"], "演播厅")
+        self.assertEqual(record["source_jsid"], "JSID-1")
+
+
+class ClassroomWeekParsingTest(unittest.TestCase):
+    """任务 2.2：课程块周次解析。"""
+
+    def test_range_is_a_closed_interval(self):
+        self.assertEqual(parse_weeks("1-3周"), ([1, 2, 3], False))
+
+    def test_single_week_is_one_week(self):
+        self.assertEqual(parse_weeks("6周"), ([6], False))
+        self.assertEqual(parse_weeks("第6周"), ([6], False))
+
+    def test_comma_and_dunhao_join_intervals(self):
+        self.assertEqual(parse_weeks("1-2周,4周"), ([1, 2, 4], False))
+        self.assertEqual(parse_weeks("1-2周、4周"), ([1, 2, 4], False))
+        self.assertEqual(parse_weeks("1-2周,5-6周"), ([1, 2, 5, 6], False))
+
+    def test_odd_qualifier_keeps_odd_weeks(self):
+        self.assertEqual(parse_weeks("1-6周(单)"), ([1, 3, 5], False))
+        self.assertEqual(parse_weeks("单周"), (list(range(1, 31, 2)), False))
+
+    def test_even_qualifier_keeps_even_weeks(self):
+        self.assertEqual(parse_weeks("1-6周(双)"), ([2, 4, 6], False))
+        self.assertEqual(parse_weeks("双周"), (list(range(2, 31, 2)), False))
+
+    def test_qualifier_filters_every_interval_of_the_block(self):
+        """限定词作用于该块已解析出的区间，块里没有区间时才作用于 1 到 30。"""
+        self.assertEqual(parse_weeks("1-4周(单),6周"), ([1, 3], False))
+        self.assertEqual(parse_weeks("单"), (list(range(1, 31, 2)), False))
+
+    def test_odd_and_even_together_do_not_filter(self):
+        """一个块里同时写单和双时无法判断各自范围，按不加限定处理。"""
+        self.assertEqual(parse_weeks("1-2周(单),3-4周(双)"), ([1, 2, 3, 4], False))
+
+    def test_unparsable_weeks_take_the_whole_semester(self):
+        for value in ("", "详见教务", None):
+            weeks, unparsed = parse_weeks(value)
+            self.assertTrue(unparsed, value)
+            self.assertEqual(weeks, list(range(1, 31)))
+
+    def test_out_of_range_and_reversed_expressions_are_dropped(self):
+        for value in ("31周", "0周", "16-1周"):
+            weeks, unparsed = parse_weeks(value)
+            self.assertTrue(unparsed, value)
+            self.assertEqual(weeks, list(range(1, 31)))
+
+    def test_week_list_is_sorted_and_unique(self):
+        self.assertEqual(parse_weeks("4周,4周,1-2周"), ([1, 2, 4], False))
 
 
 if __name__ == "__main__":
