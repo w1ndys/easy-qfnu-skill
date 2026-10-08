@@ -1,4 +1,4 @@
-"""教务命令：验证码、登录、成绩、课表、考试安排、评价、选课查询、状态、退出和忘记凭据。"""
+"""教务命令：验证码、登录、成绩、课表、查不上课教室、考试安排、评价、选课查询、状态、退出和忘记凭据。"""
 
 import os
 import sys
@@ -11,6 +11,7 @@ from .jwxt_auth import (
     login,
     status,
 )
+from .jwxt_classroom import filter_free_rooms, query_empty_classrooms
 from .jwxt_client import JWXTClient, JWXTError, default_credentials_path
 from .jwxt_evaluation import evaluate, evaluations
 from .jwxt_exams import exams
@@ -42,6 +43,59 @@ def _action_schedule(client, command):
     return schedule(client, command["semester"], command["week"], command["mode"])
 
 
+# 教室课表的空闲开关：选项名与结果字段名一一对应，同时给多个时由过滤层取交集。
+FREE_SWITCH_OPTIONS = (
+    ("--free-all-day", "free_all_day"),
+    ("--free-morning", "free_morning"),
+    ("--free-afternoon", "free_afternoon"),
+    ("--free-evening", "free_evening"),
+)
+
+
+def _action_classrooms(client, command):
+    """查不上课教室：参数交给编排层校验与查询，再按已打开的空闲开关在本地过滤结果。"""
+    result = query_empty_classrooms(
+        client,
+        command["semester"],
+        command["week"],
+        command["week_end"],
+        command["weekday"],
+        command["period_start"],
+        command["period_end"],
+        command["keyword"],
+    )
+    return filter_classrooms_result(result, command)
+
+
+# 空闲开关只影响 classrooms 的筛选，其他动作拿到这些字段也不读，行为不变。
+def free_switches(command):
+    """取用户打开的空闲开关对应的结果字段名，供过滤层取交集。"""
+    fields = []
+    for _option, field in FREE_SWITCH_OPTIONS:
+        # 只有用户真的打开这个开关才把它交给过滤层，没打开的不参与筛选。
+        if command[field]:
+            fields.append(field)
+    return fields
+
+
+def filter_classrooms_result(result, command):
+    """按空闲开关过滤结果：只筛 rooms 并重算 count，失败结果原样返回。
+
+    过滤全在本地做，不因为开关再发一次上游请求；其余字段一个都不改写。
+    """
+    # 失败结果没有 rooms，也没有可筛的教室，原样返回以保留 error 与 hint。
+    if not result.get("ok"):
+        return result
+    switches = free_switches(command)
+    # 一个开关都没打开时连 count 都不用重算，结果保持编排给出的样子。
+    if not switches:
+        return result
+    rooms = filter_free_rooms(result.get("rooms"), switches)
+    result["rooms"] = rooms
+    result["count"] = len(rooms)
+    return result
+
+
 def _action_exams(client, command):
     return exams(client, command["semester"], command["xqlb"])
 
@@ -67,6 +121,7 @@ JWXT_COMMANDS = (
     {"name": "status", "summary": "登录状态与个人资料", "kind": "action", "run": _action_status},
     {"name": "grades", "summary": "查询成绩", "kind": "action", "run": _action_grades},
     {"name": "schedule", "summary": "查询课表", "kind": "action", "run": _action_schedule},
+    {"name": "classrooms", "summary": "查询不上课教室", "kind": "action", "run": _action_classrooms},
     {"name": "exams", "summary": "查询考试安排", "kind": "action", "run": _action_exams},
     {"name": "program", "summary": "查询培养方案与完成情况", "kind": "action", "run": _action_program},
     {"name": "evaluations", "summary": "查看待提交的教学评价", "kind": "action", "run": _action_evaluations},
@@ -150,6 +205,10 @@ def parse_jwxt_command(action, args):
         "week": "",
         "mode": "",
         "keyword": "",
+        "week_end": "",
+        "weekday": "",
+        "period_start": "",
+        "period_end": "",
         "xqlb": "",
         "score": 89,
         "courses": [],
@@ -157,6 +216,10 @@ def parse_jwxt_command(action, args):
         "save": False,
         "save_set": False,
         "forget": False,
+        "free_all_day": False,
+        "free_morning": False,
+        "free_afternoon": False,
+        "free_evening": False,
     }
     index = 0
     while index < len(args):
@@ -184,6 +247,12 @@ def parse_option(command, args):
             command["save"] = args[1] == "yes"
             return 1
         return 0
+    # 空闲开关不带值：命中就置位，没命中时继续往下按带值的选项解析。
+    for option, field in FREE_SWITCH_OPTIONS:
+        # 选项名对得上说明用户要按时段筛结果，记下对应的结果字段名就返回。
+        if arg == option:
+            command[field] = True
+            return 0
     if len(args) < 2:
         raise ValueError(arg + " requires a value")
     set_value_option(command, arg, args[1])
@@ -211,6 +280,15 @@ def set_value_option(command, arg, value):
         command["mode"] = value
     elif arg == "--xqlb" or arg == "--term-category":
         command["xqlb"] = value
+    # 教室课表的周次范围、星期与大节范围：这里只把取值收进命令，校验留给 classrooms 动作。
+    elif arg == "--week-end":
+        command["week_end"] = value
+    elif arg == "--weekday":
+        command["weekday"] = value
+    elif arg == "--period-start":
+        command["period_start"] = value
+    elif arg == "--period-end":
+        command["period_end"] = value
     elif arg == "--score" or arg == "--target-score":
         try:
             command["score"] = int(value)
