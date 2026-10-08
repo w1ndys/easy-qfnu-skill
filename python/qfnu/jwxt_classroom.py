@@ -1,15 +1,19 @@
-"""查无上课教室的纯规则：参数校验、本学年学期列表、父页与课表解析，以及缓存读写。
+"""查无上课教室的纯规则与只读请求：参数校验、学期列表、页面解析、缓存读写与请求构造。
 
-本模块不联网：请求与编排在后续任务里接上，缓存只落盘解析成功的正文结果。
+本模块只发学生端教室课表的三条只读请求，并把残缺正文挡在缓存之外；编排（刷新顺序、会话
+中断与门槛判断）在后续任务里接上。
 """
 
+import http.client
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from .jwxt_auth import contains_any, strip_tags
-from .jwxt_client import expand_path, state_dir, write_private_file
+from .jwxt_client import JWXT_BASE, MAIN_URL, expand_path, state_dir, write_private_file
 from .jwxt_html import LOGIN_MARKERS, attr, parse_table_html
 from .jwxt_schedule import KBTABLE_RE
 from .result import failure
@@ -126,6 +130,33 @@ OPTION_RE = re.compile(r"(?is)(<option\b[^>]*>)(.*?)</option\s*>")
 # 数据格里的 div 开标签：class 带 kbcontent 就是课程块结构。
 DIV_TAG_RE = re.compile(r"(?is)<div\b([^>]*)>")
 
+# 请求层常量：三个学生端教室接口的地址、请求头与重试次数。
+
+# 父页：读学期下拉与当前节次模式，路径段必须是 kbcx。
+CLASSROOM_PAGE_URL = JWXT_BASE + "/jsxsd/kbcx/kbxx_classroom"
+# 教室字典：空 skjs 加 maxRow 取全量名单，路径段同样是 kbcx。
+CLASSROOM_DICTIONARY_URL = JWXT_BASE + "/jsxsd/kbcx/queryJs2"
+# 教室课表：学期教室名与本次查询都用它；路径误写成 kbxx 会返回非法访问。
+CLASSROOM_IFR_URL = JWXT_BASE + "/jsxsd/kbcx/kbxx_classroom_ifr"
+# 两个 POST 的 Referer 是父页，与浏览器从父页发起请求时的写法一致。
+CLASSROOM_REFERER = CLASSROOM_PAGE_URL
+# 教室请求专用的桌面版 Chrome 标识：只作用于这三条请求，不动 jwxt_client 的全局 UA。
+CLASSROOM_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+# 两个 POST 的表单编码类型，与既有 jwxt 请求保持一致。
+FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+# 字典请求的 maxRow：实测全量 2452 条，等于它说明名单被上限截断。
+DICTIONARY_MAX_ROW = 5000
+# 请求次数上限：首次之外最多再请求 2 次，用于传输被掐断或正文残缺。
+FETCH_ATTEMPTS = 3
+# 传输中断的提示：这类失败与参数无关，重试由本模块负责。
+TRANSPORT_HINT = "响应传输中断，请稍后重试"
+# 串行刷新的资源名：父页与字典各一份，学期按学期值分开。
+CLASSROOM_PAGE_RESOURCE = "classroom-page"
+CLASSROOM_DICTIONARY_RESOURCE = "classroom-dictionary"
+SEMESTER_RESOURCE_PREFIX = "semester:"
 
 def parse_semester(value):
     """把学期拆成排序键 (起始年, 末位)。
@@ -979,3 +1010,336 @@ def write_semester_cache_from_page(semester, kbjcmsid, raw, fetched_at=None):
     if error is not None:
         return None, error
     return write_semester_cache(semester, kbjcmsid, parsed, fetched_at), None
+
+
+# 请求层：只发学生端教室课表的三条只读请求，正文残缺时最多再请求两次。
+
+
+def page_headers(referer):
+    """父页 GET 的请求头：Referer 指向教务侧栏，UA 用教室接口的桌面版标识。
+
+    这三条请求只复用现有会话的 Cookie，不改 jwxt_client 的全局 USER_AGENT。
+    """
+    return {"Referer": referer, "User-Agent": CLASSROOM_USER_AGENT}
+
+
+def post_headers(referer):
+    """两个 POST 的请求头：表单编码、父页 Referer，以及同一个桌面版标识。"""
+    return {
+        "Content-Type": FORM_CONTENT_TYPE,
+        "Referer": referer,
+        "User-Agent": CLASSROOM_USER_AGENT,
+    }
+
+
+def send_request(client, method, url, form, referer):
+    """发一次只读请求，返回 (正文, 传输失败说明)。
+
+    form 为 None 时是 GET，不带正文；否则按表单编码发 POST。传输被掐断（分块传输中断、连接
+    被重置）或状态不是 200 时正文置空：半截正文既判不了课表，也不能写缓存。
+    """
+    headers = page_headers(referer) if form is None else post_headers(referer)
+    body = None if form is None else urlencode(form).encode("utf-8")
+    try:
+        status, _final_url, raw = client.text(method, url, body, headers)
+    except (http.client.HTTPException, OSError) as exc:
+        # 读正文中途断线：这次正文没传完，交给上层丢掉再请求。
+        return "", "传输中断: " + str(exc)
+    # 非 200 说明这次没拿到页面，例如会话失效时的跳转响应。
+    if status != 200:
+        return "", "HTTP 状态不是 200: " + str(status)
+    return raw, ""
+
+
+def content_truncated(raw, expected_title=""):
+    """判断一份没通过解析的正文是不是「没传完」，值得再请求一次。
+
+    登录页、会话互踢、非法访问、查询节次出错这几类页面都能完整取到，重试只会拿到同一份。
+    """
+    # 会话与页面类失败都是完整页面，重试不会变好。
+    if page_failure(raw) is not None:
+        return False
+    # 该学期没配节次是教务侧状态，重试也是一样的页面。
+    if PERIOD_ERROR_TEXT in raw:
+        return False
+    # 父页有固定标题：标题缺失或不是它，通常是正文被掐断了。
+    if expected_title:
+        return page_failure(raw, expected_title) is not None
+    # 课表页不看标题，解析没通过只剩结构不符一种可能，按没传完处理。
+    return True
+
+
+def retry_failure(error, attempts):
+    """把最后一次失败的说明补上请求次数，让用户知道已经重发过。"""
+    message = str(error.get("error") or "") + "；已请求 " + str(attempts) + " 次"
+    return failure("jwxt", message, str(error.get("hint") or ""))
+
+
+def request_with_retry(client, method, url, form, referer, accept, accept_args=()):
+    """按次数上限请求一条只读接口，返回 (取值, 失败结果)。
+
+    accept 接收正文与 accept_args，返回 (取值, 失败结果, 是否值得重试)：取值非 None 表示这次
+    正文可用。传输被掐断或正文残缺时丢弃这次正文再请求，最多请求 FETCH_ATTEMPTS 次；会话失效、
+    名单被上限截断这类结论重试也一样，拿到就停。
+    """
+    error = None
+    for _attempt in range(FETCH_ATTEMPTS):
+        raw, transport = send_request(client, method, url, form, referer)
+        # 传输被掐断时没有可判定的正文，直接按这次失败重试。
+        if transport:
+            error = failure("jwxt", transport, TRANSPORT_HINT)
+            continue
+        value, error, retryable = accept(raw, *accept_args)
+        # 正文可用时立刻返回，不再重试。
+        if value is not None:
+            return value, None
+        # 完整页面或服务端给出的结论重试也不会变，立刻停下。
+        if not retryable:
+            return None, error
+    return None, retry_failure(error, FETCH_ATTEMPTS)
+
+
+def accept_parent_page(raw):
+    """判定父页正文：可用时给出页面信息，标题不符等结构问题时按残缺重试。"""
+    page, error = parse_classroom_page(raw)
+    # 解析通过时这次响应可用，不必再看别的。
+    if error is None:
+        return page, None, False
+    return None, error, content_truncated(raw, CLASSROOM_TITLE)
+
+
+def not_parseable_json(raw):
+    """判断正文是不是读不成 JSON：这类失败可能只是正文没传完，值得重试。"""
+    try:
+        json.loads(raw)
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def accept_dictionary(raw):
+    """判定字典正文：可用时给出字典，JSON 读不动时按残缺重试。
+
+    list 长度等于 maxRow、或 result 不是 true，都是服务端给出的结论，重试只会拿到同一份。
+    """
+    dictionary, error = parse_dictionary(raw, DICTIONARY_MAX_ROW)
+    # 解析通过时这份名单可用。
+    if error is None:
+        return dictionary, None, False
+    return None, error, not_parseable_json(raw)
+
+
+def accept_semester_page(raw, semester, kbjcmsid):
+    """判定学期课表正文：可用时把教室名写入缓存，结构不符时按残缺重试。
+
+    缓存只在解析通过时落盘：残缺 HTML、登录页、格数不是 35 都不写。
+    """
+    payload, error = write_semester_cache_from_page(semester, kbjcmsid, raw)
+    # 解析通过时教室名已经落盘，返回值就是缓存内容。
+    if error is None:
+        return payload, None, False
+    return None, error, content_truncated(raw)
+
+
+def accept_query_page(raw):
+    """判定本次查询的课表正文：只解析不写缓存，结构不符时按残缺重试。
+
+    带周次与星期的课表是按时间过滤过的行，写进学期缓存会被当成该学期的全部教室名单。
+    """
+    parsed, error = parse_classroom_table(raw)
+    # 解析通过时给出逐行占用位，调用方后面按所选大节判定。
+    if error is None:
+        return parsed, None, False
+    return None, error, content_truncated(raw)
+
+
+def dictionary_form():
+    """教室字典 POST 的表单：skjs 留空取全部教室，maxRow 固定为实测够用的上限。"""
+    return {"skjs": "", "maxRow": str(DICTIONARY_MAX_ROW)}
+
+
+def semester_form(semester, kbjcmsid):
+    """学期教室名 POST 的表单：教室与时间参数全空，只按学期取该学期全部大节。
+
+    skjsid 服务端不认；xqid 留空让三个校区一起返回。
+    """
+    return {
+        "xnxqh": str(semester if semester is not None else "").strip(),
+        "kbjcmsid": str(kbjcmsid if kbjcmsid is not None else "").strip(),
+        "skyx": "",
+        "xqid": "",
+        "jzwid": "",
+        "skjsid": "",
+        "skjs": "",
+        "zc1": "",
+        "zc2": "",
+        "skxq1": "",
+        "skxq2": "",
+        "jc1": "",
+        "jc2": "",
+    }
+
+
+def query_form(semester, kbjcmsid, week_start, week_end, weekday, skjs=""):
+    """本次查询 POST 的表单：周次与星期交给服务端过滤，节次参数留空。
+
+    jc1 与 jc2 一旦传了就只剩所选大节的列，全天空闲与最晚可用节次都算不出来，因此恒为空。
+    """
+    form = semester_form(semester, kbjcmsid)
+    form["skjs"] = str(skjs if skjs is not None else "").strip()
+    form["zc1"] = str(week_start)
+    form["zc2"] = str(week_end)
+    # 星期顶死一天：起止两值写同一个星期几，免得把多天的格混在一次响应里。
+    form["skxq1"] = str(weekday)
+    form["skxq2"] = str(weekday)
+    return form
+
+
+def keyword_skjs(keyword, records):
+    """取本次课表 POST 要传的 skjs：只有精确教室名才传，楼名等包含匹配传空串。
+
+    关键词与某条未展开 jsmc 规范化后完全相同时，传该条未展开的原名；部分关键词直接发给
+    服务端的行为没有实测过，所以关键词只在本地按展示名过滤。
+    """
+    text = normalize_room_name(keyword)
+    # 空关键词不缩小范围，skjs 留空。
+    if not text:
+        return ""
+    for record in records or ():
+        # 非字典记录取不出 jsmc，跳过。
+        if not isinstance(record, dict):
+            continue
+        original = str(record.get("jsmc") or "")
+        # 规范化后完全相同才算精确教室名。
+        if normalize_room_name(original) == text:
+            # 写入未展开的原名，不用展开后的单体教室名。
+            return original
+    return ""
+
+
+# 进程内串行刷新状态：资源名 → 锁，资源名 → 这次刷新等到的结果。
+SERIAL_GUARD = threading.Lock()
+SERIAL_LOCKS = {}
+SERIAL_RESULTS = {}
+
+
+def semester_resource(semester):
+    """取某学期在串行刷新里的资源名：学期值不同的资源互不等待。"""
+    return SEMESTER_RESOURCE_PREFIX + str(semester if semester is not None else "").strip()
+
+
+def serial_lock(name):
+    """取资源名对应的锁；同一资源名在进程里只有同一个锁对象。"""
+    with SERIAL_GUARD:
+        lock = SERIAL_LOCKS.get(name)
+        # 第一次用到这个资源时建锁，之后的调用都用它等同一次刷新。
+        if lock is None:
+            lock = threading.Lock()
+            SERIAL_LOCKS[name] = lock
+        return lock
+
+
+def serial_refresh(name, fetch, *args):
+    """按资源名串行刷新，返回 (取值, 失败结果)。
+
+    同一资源名在进程里只会真正请求一次：后来的调用者拿到锁后直接复用这次结果，不会并行对
+    同一学期或字典重复 POST。失败的结果同样复用，避免同一进程反复重试。fetch 是发请求的
+    函数，args 是它的参数。
+    """
+    lock = serial_lock(name)
+    with lock:
+        # 这个资源本进程已经刷过一次时直接复用，不再重复请求上游。
+        if name in SERIAL_RESULTS:
+            return SERIAL_RESULTS[name]
+        result = fetch(*args)
+        SERIAL_RESULTS[name] = result
+        return result
+
+
+def reset_serial_refresh():
+    """清空进程内的刷新记录：一次查询开始前调用，让本次查询自己去刷新资源。
+
+    缓存文件本身仍然生效，这里清掉的只是本进程已经等到的同一次结果，供编排与测试隔离。
+    """
+    with SERIAL_GUARD:
+        SERIAL_RESULTS.clear()
+
+
+def request_parent_page(client):
+    """真正读父页的那一次：GET 父页，Referer 用教务侧栏入口。"""
+    return request_with_retry(
+        client,
+        "GET",
+        CLASSROOM_PAGE_URL,
+        None,
+        MAIN_URL,
+        accept_parent_page,
+    )
+
+
+def fetch_parent_page(client):
+    """读教室课表父页，返回 (页面信息, 失败结果)。
+
+    页面不可用（登录页、会话互踢、非法访问、标题不符）时返回失败结果，调用方不得继续发请求；
+    同一个进程里这条 GET 只发一次。
+    """
+    return serial_refresh(CLASSROOM_PAGE_RESOURCE, request_parent_page, client)
+
+
+def request_dictionary(client):
+    """真正拉字典的那一次：POST 表单只有 skjs 与 maxRow，Referer 是父页。"""
+    return request_with_retry(
+        client,
+        "POST",
+        CLASSROOM_DICTIONARY_URL,
+        dictionary_form(),
+        CLASSROOM_REFERER,
+        accept_dictionary,
+    )
+
+
+def fetch_dictionary(client):
+    """拉一次教室字典，返回 (字典, 失败结果)。
+
+    名单被上限截断或 result 不是 true 时返回失败结果，由调用方决定能不能继续用旧字典；
+    同一个进程里只拉一次。
+    """
+    return serial_refresh(CLASSROOM_DICTIONARY_RESOURCE, request_dictionary, client)
+
+
+def request_semester_page(client, semester, kbjcmsid):
+    """真正拉学期课表的那一次：时间参数全空，正文通过完整性校验时才写缓存。"""
+    return request_with_retry(
+        client,
+        "POST",
+        CLASSROOM_IFR_URL,
+        semester_form(semester, kbjcmsid),
+        CLASSROOM_REFERER,
+        accept_semester_page,
+        (semester, kbjcmsid),
+    )
+
+
+def fetch_semester_page(client, semester, kbjcmsid):
+    """拉一次某学期有排课的教室名并写入缓存，返回 (缓存内容, 失败结果)。
+
+    取该学期全部 5 个大节，只统计数据行首格；同一个学期在进程里只请求一次。
+    """
+    return serial_refresh(semester_resource(semester), request_semester_page, client, semester, kbjcmsid)
+
+
+def fetch_query_page(client, semester, kbjcmsid, week_start, week_end, weekday, skjs=""):
+    """发本次查询的课表 POST，返回 (解析结果, 失败结果)。
+
+    周次范围写进 zc1/zc2，同一天写进 skxq1/skxq2，jc1/jc2 留空以取整天 35 格；这份带时间
+    参数的正文不写学期缓存。
+    """
+    form = query_form(semester, kbjcmsid, week_start, week_end, weekday, skjs)
+    return request_with_retry(
+        client,
+        "POST",
+        CLASSROOM_IFR_URL,
+        form,
+        CLASSROOM_REFERER,
+        accept_query_page,
+    )

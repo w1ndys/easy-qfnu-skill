@@ -1,9 +1,12 @@
+import http.client
 import json
 import os
 import random
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
 from qfnu.jwxt_classroom import (
     BLOCK_START_BOUNDS,
@@ -11,6 +14,12 @@ from qfnu.jwxt_classroom import (
     CACHE_ENV_VAR,
     CACHE_TIMEZONE,
     CACHE_TTL_DAYS,
+    CLASSROOM_DICTIONARY_URL,
+    CLASSROOM_IFR_URL,
+    CLASSROOM_PAGE_URL,
+    CLASSROOM_USER_AGENT,
+    DICTIONARY_MAX_ROW,
+    FETCH_ATTEMPTS,
     GRID_BLOCK_NAMES,
     GRID_CELL_COUNT,
     PERIOD_BLOCKS,
@@ -19,9 +28,15 @@ from qfnu.jwxt_classroom import (
     cache_dir,
     cache_expired,
     dictionary_cache_path,
+    dictionary_form,
     expand_record,
     expand_room_name,
+    fetch_dictionary,
+    fetch_parent_page,
+    fetch_query_page,
+    fetch_semester_page,
     free_blocks_of_day,
+    keyword_skjs,
     normalize_room_name,
     parse_academic_year,
     parse_classroom_page,
@@ -29,19 +44,23 @@ from qfnu.jwxt_classroom import (
     parse_dictionary,
     parse_semester,
     query_blocks,
+    query_form,
     read_dictionary_cache,
     read_semester_cache,
+    reset_serial_refresh,
     room_occupancy_map,
     row_occupancy,
     semester_cache_path,
     semester_complete,
+    semester_form,
+    serial_lock,
     validate_query,
     write_dictionary_cache,
     write_semester_cache,
     write_semester_cache_from_page,
     year_semester_list,
 )
-from qfnu.jwxt_client import state_dir
+from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, state_dir
 
 # 父页学期下拉的固定样本：含别的学年、未来学年与格式不符的项。
 SEMESTER_OPTIONS = (
@@ -439,8 +458,7 @@ PARENT_TITLE = "全校性教室课表"
 # 父页样本里的节次模式 ID：故意不用文档里的样本值，用来断言解析不写死样本 ID。
 PARENT_MODE_ID = "3F1C9A5E7B20468D"
 
-# 字典请求的 maxRow，截断判据按它比较。
-DICTIONARY_MAX_ROW = 5000
+# 字典请求的 maxRow 直接用模块常量 DICTIONARY_MAX_ROW，截断判据按它比较。
 
 # 表头第 1 格原文，与设计里的「教室\节次」一致。
 HEADER_FIRST_CELL_TEXT = "教室\\节次"
@@ -1340,6 +1358,604 @@ class ClassroomCacheRoundTripPropertyTest(ClassroomCacheTestCase):
         self.assertEqual(read_back["room_count"], len(expected))
         self.assertEqual(read_back["source_row_count"], len(rows))
         self.assertEqual(read_back["fetched_at"], CACHE_WRITTEN_TEXT)
+
+
+
+# 请求层用例：假客户端记录请求并按队列返回响应，不发任何真实网络请求。
+
+
+# 学期教室名 POST 里必须为空的 11 个字段。
+EMPTY_SEMESTER_FIELDS = (
+    "skyx",
+    "xqid",
+    "jzwid",
+    "skjsid",
+    "skjs",
+    "zc1",
+    "zc2",
+    "skxq1",
+    "skxq2",
+    "jc1",
+    "jc2",
+)
+
+# 学生端路径段必须出现的名字，以及绝不能出现的路径段。
+STUDENT_PATH_SEGMENT = "kbcx"
+FOREIGN_PATH_SEGMENTS = ("kbxx", "jsxsd.kbxx")
+
+# 会话互踢提示原文：这类完整页面重试也拿不到别的，用来断言不重试。
+SESSION_KICKED_TEXT = "您的账号在其它地方登录"
+
+# 精确教室名与楼名关键词的样本：合称记录用来断言写进 skjs 的是未展开原名。
+KEYWORD_RECORDS = (
+    {"jsid": "JSID-A", "jsmc": "数学楼401"},
+    {"jsid": "JSID-B", "jsmc": "数学楼401、403"},
+    {"jsid": "JSID-C", "jsmc": "格物楼B101"},
+)
+
+
+class FakeClassroomClient:
+    """假教务客户端：记录每次请求，并按队列给出响应或抛出传输异常。"""
+
+    def __init__(self, responses=()):
+        # 逐次调用要返回的 (状态码, 正文)，也可以是表示传输失败的异常。
+        self.responses = list(responses)
+        # 每次请求的 method、url、body 与 headers，供用例断言。
+        self.calls = []
+
+    def text(self, method, target, body=None, headers=None, same_origin=False):
+        """按 JWXTClient.text 的返回形状给出 (状态码, 最终地址, 正文)。
+
+        状态码转成整数，与真实客户端一致，免得样本里的 "200" 被当成非 200。
+        """
+        self.calls.append(
+            {"method": method, "url": target, "body": body, "headers": headers or {}}
+        )
+        # 队列里没有响应说明代码多发了一次请求，直接报错而不是继续编造正文。
+        if not self.responses:
+            raise AssertionError("unexpected extra request: " + method + " " + target)
+        item = self.responses.pop(0)
+        # 队列项是异常时按传输失败抛出，用来模拟分块传输中断。
+        if isinstance(item, Exception):
+            raise item
+        status, raw = item
+        return int(status), target, raw
+
+def request_form_fields(call):
+    """把一次 POST 的正文解析回表单字段，便于断言传了哪些参数。
+
+    保留空值字段：11 个过滤字段就是要断言被真的传成了空串。
+    """
+    text = call["body"].decode("utf-8")
+    return {key: values[0] for key, values in parse_qs(text, keep_blank_values=True).items()}
+    return {key: values[0] for key, values in parse_qs(call["body"].decode("utf-8")).items()}
+
+
+def truncated_transfer():
+    """造一次分块传输中断：正文读到一半就断。"""
+    return http.client.IncompleteRead(b"<html>", 1024)
+
+
+def truncated_body():
+    """造一份没传完的课表正文：有表头，但表格没有闭合标签。"""
+    body = classroom_table([data_row("数学楼401", {0})])
+    return "200", body[: body.index("</table>")]
+
+
+def dictionary_body(items):
+    """拼一份 queryJs2 响应。"""
+    return "200", json.dumps({"result": True, "list": list(items)})
+
+
+class ClassroomRequestTestCase(ClassroomCacheTestCase):
+    """请求层用例的共同部分：临时缓存目录、假客户端与进程内刷新记录。"""
+
+    def setUp(self):
+        """先按缓存用例准备好临时目录，再清掉本进程已经等到的刷新结果。"""
+        super().setUp()
+        reset_serial_refresh()
+
+    def fake_client(self, *responses):
+        """取一个假客户端：响应按顺序给出，用来替代真实会话。"""
+        return FakeClassroomClient(responses)
+
+    def table_response(self, rooms=(("数学楼401", {0}),)):
+        """拼一份可用的课表响应：一行教室名加占用下标。"""
+        rows = [data_row(name, occupied) for name, occupied in rooms]
+        return "200", classroom_table(rows)
+
+
+class ClassroomRequestFormTest(ClassroomRequestTestCase):
+    """任务 8.1 / 需求 1.5、3.1、3.3、3.4、7.5：请求体字段、路径与请求头。"""
+
+    def query_params(self, **overrides):
+        """先过参数校验取参数，再用它拼请求体，保证断言的是真实链路。"""
+        values = {
+            "semester": SELECTED_SEMESTER,
+            "week_start": "6",
+            "week_end": "9",
+            "weekday": "3",
+            "period_start": "1",
+            "period_end": "5",
+            "keyword": "",
+        }
+        values.update(overrides)
+        params, error = validate_query(
+            values["semester"],
+            values["week_start"],
+            values["week_end"],
+            values["weekday"],
+            values["period_start"],
+            values["period_end"],
+            values["keyword"],
+        )
+        self.assertIsNone(error)
+        return params
+
+    def query_form_of(self, params, skjs=""):
+        """按校验后的参数拼本次查询的请求体。"""
+        return query_form(
+            params["semester"],
+            PARENT_MODE_ID,
+            params["week_start"],
+            params["week_end"],
+            params["weekday"],
+            skjs,
+        )
+
+    def test_query_form_carries_week_range_and_the_same_weekday(self):
+        """起止周次写进 zc1/zc2，星期起止写同一个值，节次参数与 skjsid 为空。"""
+        form = self.query_form_of(self.query_params())
+        self.assertEqual(form["zc1"], "6")
+        self.assertEqual(form["zc2"], "9")
+        self.assertEqual(form["skxq1"], "3")
+        self.assertEqual(form["skxq2"], "3")
+        self.assertEqual(form["skxq1"], form["skxq2"])
+        self.assertEqual(form["jc1"], "")
+        self.assertEqual(form["jc2"], "")
+        self.assertEqual(form["skjsid"], "")
+
+    def test_query_form_repeats_the_start_week_when_end_is_omitted(self):
+        """只给起始周次时结束周次等于它，zc2 跟着 zc1 走。"""
+        params = self.query_params(week_end=None)
+        self.assertEqual(params["week_end"], params["week_start"])
+        form = self.query_form_of(params)
+        self.assertEqual(form["zc1"], "6")
+        self.assertEqual(form["zc2"], "6")
+
+    def test_semester_form_keeps_the_eleven_time_and_room_fields_empty(self):
+        """学期教室名 POST 的 11 个字段全是空串，只有学期与节次模式有值。"""
+        form = semester_form(SELECTED_SEMESTER, PARENT_MODE_ID)
+        for field in EMPTY_SEMESTER_FIELDS:
+            self.assertEqual(form[field], "")
+        self.assertEqual(form["xnxqh"], SELECTED_SEMESTER)
+        self.assertEqual(form["kbjcmsid"], PARENT_MODE_ID)
+        self.assertEqual(set(form), set(EMPTY_SEMESTER_FIELDS) | {"xnxqh", "kbjcmsid"})
+
+    def test_dictionary_form_asks_for_the_full_roster(self):
+        """字典 POST 固定空 skjs 与 maxRow=5000，不拿 skjsid 当过滤条件。"""
+        self.assertEqual(dictionary_form(), {"skjs": "", "maxRow": "5000"})
+        self.assertEqual(DICTIONARY_MAX_ROW, 5000)
+
+    def test_query_request_sends_form_encoding_referer_and_desktop_ua(self):
+        """本次查询是一条表单编码的 POST，带父页 Referer 与教室请求专用 UA。"""
+        client = self.fake_client(self.table_response())
+        parsed, error = fetch_query_page(client, SELECTED_SEMESTER, PARENT_MODE_ID, "6", "9", 3)
+        self.assertIsNone(error)
+        self.assertIsNotNone(parsed)
+        call = client.calls[0]
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(call["url"], CLASSROOM_IFR_URL)
+        self.assertEqual(call["headers"]["Content-Type"], "application/x-www-form-urlencoded")
+        self.assertEqual(call["headers"]["Referer"], CLASSROOM_PAGE_URL)
+        self.assertEqual(call["headers"]["User-Agent"], CLASSROOM_USER_AGENT)
+        fields = request_form_fields(call)
+        self.assertEqual(fields["zc1"], "6")
+        self.assertEqual(fields["zc2"], "9")
+        self.assertEqual(fields["skxq1"], "3")
+        self.assertEqual(fields["skxq2"], "3")
+        self.assertEqual(fields["jc1"], "")
+        self.assertEqual(fields["jc2"], "")
+        self.assertEqual(fields["skjsid"], "")
+
+    def test_parent_page_request_is_a_get_with_the_sidebar_referer(self):
+        """父页是 GET：带教务侧栏 Referer，不带表单编码，也没有正文。"""
+        client = self.fake_client(("200", parent_page()))
+        page, error = fetch_parent_page(client)
+        self.assertIsNone(error)
+        self.assertEqual(page["kbjcmsid"], PARENT_MODE_ID)
+        call = client.calls[0]
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["url"], CLASSROOM_PAGE_URL)
+        self.assertEqual(call["headers"]["Referer"], MAIN_URL)
+        self.assertEqual(call["headers"]["User-Agent"], CLASSROOM_USER_AGENT)
+        self.assertNotIn("Content-Type", call["headers"])
+        self.assertIsNone(call["body"])
+
+    def test_dictionary_request_sends_empty_skjs_and_max_row(self):
+        """字典 POST 的表单只有空 skjs 与 maxRow，Referer 是父页。"""
+        client = self.fake_client(dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}]))
+        dictionary, error = fetch_dictionary(client)
+        self.assertIsNone(error)
+        self.assertEqual(dictionary["records"][0]["jsmc"], "数学楼401")
+        call = client.calls[0]
+        self.assertEqual(call["url"], CLASSROOM_DICTIONARY_URL)
+        self.assertEqual(call["headers"]["Referer"], CLASSROOM_PAGE_URL)
+        fields = request_form_fields(call)
+        self.assertEqual(fields["skjs"], "")
+        self.assertEqual(fields["maxRow"], "5000")
+
+    def test_semester_request_keeps_every_filter_field_empty(self):
+        """学期教室名请求里 11 个过滤字段真发成空串，只有学期与节次模式有值。"""
+        client = self.fake_client(self.table_response())
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(error)
+        self.assertEqual(payload["rooms"], ["数学楼401"])
+        fields = request_form_fields(client.calls[0])
+        for field in EMPTY_SEMESTER_FIELDS:
+            self.assertEqual(fields[field], "")
+        self.assertEqual(fields["xnxqh"], SELECTED_SEMESTER)
+        self.assertEqual(fields["kbjcmsid"], PARENT_MODE_ID)
+
+    def test_three_urls_stay_on_the_student_side(self):
+        """三条请求都在 kbcx 路径下，没有 kbxx 路径段，也没有教师端 jsjy_ 前缀。"""
+        for url in (CLASSROOM_PAGE_URL, CLASSROOM_DICTIONARY_URL, CLASSROOM_IFR_URL):
+            self.assertTrue(url.startswith(JWXT_BASE + "/jsxsd/"))
+            segments = urlparse(url).path.split("/")
+            self.assertIn(STUDENT_PATH_SEGMENT, segments)
+            for foreign in FOREIGN_PATH_SEGMENTS:
+                self.assertNotIn(foreign, segments)
+            for segment in segments:
+                self.assertFalse(segment.startswith("jsjy_"))
+            self.assertNotIn("jsjy_", url)
+
+    def test_exact_keyword_writes_the_unexpanded_name_into_skjs(self):
+        """关键词与未展开 jsmc 完全相同时写该原名，首尾空白不影响匹配。"""
+        self.assertEqual(keyword_skjs("数学楼401", KEYWORD_RECORDS), "数学楼401")
+        self.assertEqual(keyword_skjs("数学楼401、403", KEYWORD_RECORDS), "数学楼401、403")
+        self.assertEqual(keyword_skjs(" 数学楼401 ", KEYWORD_RECORDS), "数学楼401")
+
+    def test_building_or_unknown_keyword_leaves_skjs_empty(self):
+        """楼名与无关词都是包含匹配，skjs 留空，只在本地按展示名过滤。"""
+        self.assertEqual(keyword_skjs("数学楼", KEYWORD_RECORDS), "")
+        self.assertEqual(keyword_skjs("格物楼B102", KEYWORD_RECORDS), "")
+        self.assertEqual(keyword_skjs("体育场", KEYWORD_RECORDS), "")
+        self.assertEqual(keyword_skjs("", KEYWORD_RECORDS), "")
+        self.assertEqual(keyword_skjs("数学楼401", ()), "")
+
+    def test_exact_keyword_flows_into_the_query_request(self):
+        """精确教室名查询时发出去的 skjs 就是那条未展开原名。"""
+        client = self.fake_client(self.table_response())
+        fetch_query_page(
+            client,
+            SELECTED_SEMESTER,
+            PARENT_MODE_ID,
+            "6",
+            "9",
+            3,
+            keyword_skjs("数学楼401、403", KEYWORD_RECORDS),
+        )
+        fields = request_form_fields(client.calls[0])
+        self.assertEqual(fields["skjs"], "数学楼401、403")
+
+
+class ClassroomRequestInvariantPropertyTest(ClassroomRequestTestCase):
+    """任务 8.2 / 设计 Correctness Properties 第 6 条 / 需求 1.5、3.1：请求不变式。"""
+
+    # 固定种子让属性测试可复现。
+    SEED = 20261013
+
+    # 轮数，覆盖多组周次、星期、大节与关键词。
+    ROUNDS = 30
+
+    # 关键词池：空关键词、精确名、楼名与无关词。
+    KEYWORD_POOL = ("", "数学楼", "数学楼401", "格物楼B101", "体育场")
+
+    def random_params(self, generator):
+        """随机造一组合法参数：周次与星期在范围内，大节起点取块首。"""
+        week_start = generator.randint(1, 30)
+        week_end = generator.randint(week_start, 30)
+        period_start = generator.choice(BLOCK_START_BOUNDS)
+        period_end = generator.randint(period_start, 12)
+        params, error = validate_query(
+            SELECTED_SEMESTER,
+            str(week_start),
+            str(week_end),
+            str(generator.randint(1, 7)),
+            str(period_start),
+            str(period_end),
+            generator.choice(self.KEYWORD_POOL),
+        )
+        self.assertIsNone(error)
+        return params
+
+    def skjs_of(self, params):
+        """按参数里的关键词取这次要传的 skjs。"""
+        return keyword_skjs(params["keyword"], KEYWORD_RECORDS)
+
+    def test_every_query_form_keeps_jc1_and_jc2_empty(self):
+        """随机参数下每次课表表单的 jc1 与 jc2 都是空字符串，星期起止同值。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            params = self.random_params(generator)
+            form = query_form(
+                params["semester"],
+                PARENT_MODE_ID,
+                params["week_start"],
+                params["week_end"],
+                params["weekday"],
+                self.skjs_of(params),
+            )
+            self.assertEqual(form["jc1"], "")
+            self.assertEqual(form["jc2"], "")
+            self.assertEqual(form["zc1"], str(params["week_start"]))
+            self.assertEqual(form["zc2"], str(params["week_end"]))
+            self.assertEqual(form["skxq1"], str(params["weekday"]))
+            self.assertEqual(form["skxq2"], str(params["weekday"]))
+
+    def test_sent_query_request_keeps_jc_empty_and_the_grid_at_35_cells(self):
+        """发出去的请求 jc1/jc2 为空，响应网格仍是 7 天 × 5 块共 35 格。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            params = self.random_params(generator)
+            client = self.fake_client(self.table_response())
+            parsed, error = fetch_query_page(
+                client,
+                params["semester"],
+                PARENT_MODE_ID,
+                params["week_start"],
+                params["week_end"],
+                params["weekday"],
+                self.skjs_of(params),
+            )
+            self.assertIsNone(error)
+            fields = request_form_fields(client.calls[0])
+            self.assertEqual(fields["jc1"], "")
+            self.assertEqual(fields["jc2"], "")
+            row = parsed["rows"][0]
+            self.assertEqual(sorted(row["occupancy"]), list(range(1, 8)))
+            for weekday in row["occupancy"]:
+                self.assertEqual(len(row["occupancy"][weekday]), len(PERIOD_BLOCKS))
+
+
+class ClassroomKeywordSkjsPropertyTest(unittest.TestCase):
+    """任务 8.3 / 设计 Correctness Properties 第 10 条 / 需求 3.3、3.4、7.5。"""
+
+    # 固定种子让属性测试可复现。
+    SEED = 20261014
+
+    # 轮数，覆盖精确名、楼名、展开后单体名与无关词。
+    ROUNDS = 40
+
+    # 房号池，用来拼字典记录与关键词。
+    NUMBER_POOL = (101, 103, 201, 305, 401, 403, 505, 708)
+
+    # 无关词池：字典里不存在，skjs 必须留空。
+    UNRELATED_POOL = ("体育场", "图书馆", "食堂")
+
+    def random_records(self, generator, size=3):
+        """随机造几条字典记录：一半是单体名，一半是合称名。"""
+        records = []
+        for index in range(size):
+            building = generator.choice(BUILDING_POOL)
+            name = building + str(generator.choice(self.NUMBER_POOL))
+            # 一半的记录拼成合称，展开后有两间教室，但 jsmc 仍是合称名。
+            if generator.random() < 0.5:
+                separator = generator.choice(("、", "."))
+                name = name + separator + building + str(generator.choice(self.NUMBER_POOL))
+            records.append({"jsid": "JSID-" + str(index), "jsmc": name})
+        return records
+
+    def keyword_candidate(self, generator, records):
+        """随机取一个关键词：精确名、楼名、展开后单体名或无关词。"""
+        kind = generator.randint(0, 3)
+        # 精确名：直接用某条记录的未展开 jsmc。
+        if kind == 0:
+            return generator.choice(records)["jsmc"]
+        # 楼名：只取前缀，属于包含匹配，不该写进 skjs。
+        if kind == 1:
+            return generator.choice(BUILDING_POOL)
+        # 展开后的单体名：合称展开出来的一间，通常不是任何一条未展开 jsmc。
+        if kind == 2:
+            return generator.choice(expand_room_name(generator.choice(records)["jsmc"])["rooms"])
+        # 无关词：字典里不存在。
+        return generator.choice(self.UNRELATED_POOL)
+
+    def expected_skjs(self, keyword, records):
+        """按规则算应有的 skjs：只有与某条未展开 jsmc 完全相同才写该原名。"""
+        text = normalize_room_name(keyword)
+        for record in records:
+            # 规范化后完全相同才算精确教室名。
+            if text and normalize_room_name(record["jsmc"]) == text:
+                return record["jsmc"]
+        return ""
+
+    def test_only_an_unexpanded_jsmc_match_is_written_into_skjs(self):
+        """随机关键词下只有与未展开 jsmc 完全相同的才写 skjs，且写的是原名。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            records = self.random_records(generator)
+            keyword = self.keyword_candidate(generator, records)
+            written = keyword_skjs(keyword, records)
+            self.assertEqual(written, self.expected_skjs(keyword, records))
+            # 写入的必须是字典里那条原文，不是展开后的单体教室名。
+            if written:
+                self.assertIn(written, [record["jsmc"] for record in records])
+                self.assertEqual(normalize_room_name(written), normalize_room_name(keyword))
+
+
+class ClassroomFetchRetryTest(ClassroomRequestTestCase):
+    """任务 8.4 / 需求 2.6 / 设计 Error Handling「分块传输中断」：丢弃正文，最多再请求 2 次。"""
+
+    def test_truncated_transfer_is_retried_and_then_succeeds(self):
+        """第一次传输被掐断时丢掉这次正文，第二次拿到完整课表才写缓存。"""
+        client = self.fake_client(truncated_transfer(), self.table_response())
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(error)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(payload["rooms"], ["数学楼401"])
+        self.assertTrue(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+
+    def test_three_truncated_transfers_fail_without_writing_cache(self):
+        """三次都被掐断时该学期刷新失败，残缺正文一个字都不写进缓存。"""
+        client = self.fake_client(
+            truncated_transfer(), truncated_transfer(), truncated_transfer()
+        )
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(payload)
+        self.assertFalse(error["ok"])
+        self.assertIn("传输中断", error["error"])
+        self.assertIn("已请求 3 次", error["error"])
+        self.assertEqual(FETCH_ATTEMPTS, 3)
+        self.assertEqual(len(client.calls), FETCH_ATTEMPTS)
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+        self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+
+    def test_unfinished_body_is_discarded_then_retried(self):
+        """正文没传完（缺闭合表格）时同样丢弃重试，成功那次才写缓存。"""
+        client = self.fake_client(truncated_body(), self.table_response())
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(error)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(payload["rooms"], ["数学楼401"])
+
+    def test_three_unfinished_bodies_fail_without_writing_cache(self):
+        """三次都只拿到残缺正文时按刷新失败处理，缓存里没有这个学期。"""
+        client = self.fake_client(truncated_body(), truncated_body(), truncated_body())
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(payload)
+        self.assertFalse(error["ok"])
+        self.assertEqual(len(client.calls), FETCH_ATTEMPTS)
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+
+    def test_login_page_is_not_retried(self):
+        """登录页是完整页面，重试只会拿到同一份，因此只请求一次就停。"""
+        client = self.fake_client(("200", parent_page(title="登录", body="请输入密码")))
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(payload)
+        self.assertIn("重新登录", error["hint"])
+        self.assertEqual(len(client.calls), 1)
+
+    def test_session_kicked_page_is_not_retried(self):
+        """会话互踢提示同样是完整页面，一次请求就停，且不写缓存。"""
+        body = "<html><body>" + SESSION_KICKED_TEXT + "</body></html>"
+        client = self.fake_client(("200", body))
+        payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(payload)
+        self.assertIn("会话互踢", error["error"])
+        self.assertEqual(len(client.calls), 1)
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+
+    def test_query_page_never_writes_the_semester_cache(self):
+        """带周次与星期的课表是按时间过滤过的行，不进学期缓存。"""
+        client = self.fake_client(self.table_response())
+        parsed, error = fetch_query_page(client, SELECTED_SEMESTER, PARENT_MODE_ID, "6", "9", 3)
+        self.assertIsNone(error)
+        self.assertEqual(len(parsed["rows"]), 1)
+        self.assertIsNone(read_semester_cache(SELECTED_SEMESTER))
+        self.assertFalse(os.path.exists(semester_cache_path(SELECTED_SEMESTER)))
+
+    def test_parent_page_truncated_body_is_retried(self):
+        """父页标题取不出来（正文没传完）时重试，第二次拿到完整父页。"""
+        client = self.fake_client(("200", "<html><head><title>"), ("200", parent_page()))
+        page, error = fetch_parent_page(client)
+        self.assertIsNone(error)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(page["selected"], SELECTED_SEMESTER)
+
+    def test_truncated_dictionary_json_is_retried(self):
+        """字典正文被掐断（JSON 读不动）时重试一次，第二次拿到完整名单。"""
+        client = self.fake_client(("200", '{"result": tr'), dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}]))
+        dictionary, error = fetch_dictionary(client)
+        self.assertIsNone(error)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(dictionary["records"][0]["jsmc"], "数学楼401")
+
+    def test_truncated_roster_is_not_retried(self):
+        """list 长度等于 maxRow 是服务端给出的截断结论，重试只会拿到同样的长度。"""
+        items = [{"jsid": "JSID-" + str(index), "jsmc": "数学楼" + str(index)} for index in range(DICTIONARY_MAX_ROW)]
+        client = self.fake_client(dictionary_body(items))
+        dictionary, error = fetch_dictionary(client)
+        self.assertIsNone(dictionary)
+        self.assertIn("截断", error["error"])
+        self.assertEqual(len(client.calls), 1)
+
+
+class ClassroomSerialRefreshTest(ClassroomRequestTestCase):
+    """需求 2.5：同一进程同一资源只刷新一次，后来的调用等同一次结果。"""
+
+    def test_same_resource_name_shares_one_lock(self):
+        """同一资源名拿到同一个锁对象，不同资源各有各的锁。"""
+        self.assertIs(serial_lock("semester:2026-2027-1"), serial_lock("semester:2026-2027-1"))
+        self.assertIsNot(serial_lock("semester:2026-2027-1"), serial_lock("semester:2026-2027-2"))
+
+    def test_concurrent_calls_to_the_same_semester_request_once(self):
+        """同一学期的并发调用只发一次请求，每个调用者拿到的是同一次结果。"""
+        client = self.fake_client(self.table_response())
+        results = []
+        results_guard = threading.Lock()
+
+        def worker():
+            """一个调用者：拉同一个学期并记下结果。"""
+            payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+            with results_guard:
+                results.append((payload, error))
+
+        threads = [threading.Thread(target=worker) for _index in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(results), 6)
+        self.assertEqual([error for _payload, error in results], [None] * 6)
+        self.assertEqual(len(client.calls), 1)
+        self.assertTrue(all(payload is results[0][0] for payload, _error in results))
+
+    def test_different_semesters_are_refreshed_separately(self):
+        """不同学期各自请求一次，不共用同一次结果。"""
+        client = self.fake_client(self.table_response(), self.table_response())
+        first, first_error = fetch_semester_page(client, "2026-2027-1", PARENT_MODE_ID)
+        second, second_error = fetch_semester_page(client, "2026-2027-2", PARENT_MODE_ID)
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(first["semester"], "2026-2027-1")
+        self.assertEqual(second["semester"], "2026-2027-2")
+
+    def test_failed_refresh_is_reused_within_the_process(self):
+        """刷新失败的结果同样复用：同一进程不会再对同一学期重发请求。"""
+        client = self.fake_client(
+            truncated_transfer(), truncated_transfer(), truncated_transfer()
+        )
+        _payload, error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIn("传输中断", error["error"])
+        again_payload, again_error = fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertIsNone(again_payload)
+        self.assertEqual(again_error, error)
+        self.assertEqual(len(client.calls), FETCH_ATTEMPTS)
+
+    def test_reset_lets_the_next_query_refresh_again(self):
+        """清掉进程内记录后，下一次查询会重新刷新这个资源。"""
+        client = self.fake_client(self.table_response(), self.table_response())
+        fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        reset_serial_refresh()
+        fetch_semester_page(client, SELECTED_SEMESTER, PARENT_MODE_ID)
+        self.assertEqual(len(client.calls), 2)
+
+    def test_page_and_dictionary_have_their_own_resources(self):
+        """父页与字典各自一个资源名：第二次调用复用结果，不再请求上游。"""
+        page_body = parent_page()
+        dictionary_data = dictionary_body([{"jsid": "JSID-A", "jsmc": "数学楼401"}])
+        client = self.fake_client(("200", page_body), dictionary_data)
+        fetch_parent_page(client)
+        fetch_dictionary(client)
+        page, page_error = fetch_parent_page(client)
+        dictionary, dictionary_error = fetch_dictionary(client)
+        self.assertIsNone(page_error)
+        self.assertIsNone(dictionary_error)
+        self.assertEqual(page["selected"], SELECTED_SEMESTER)
+        self.assertEqual(dictionary["records"][0]["jsid"], "JSID-A")
+        self.assertEqual(len(client.calls), 2)
 
 
 if __name__ == "__main__":
