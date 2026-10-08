@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Publish an easy-qfnu date-tagged GitHub Release from the Python skill repo."""
+"""Publish an easy-qfnu SemVer-tagged GitHub Release from the Python skill repo."""
 
 import argparse
-import datetime as dt
 import json
 import os
 import re
@@ -11,11 +10,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION_RE = re.compile(r"^v[0-9]{4}[.][0-9]{2}[.][0-9]{2}[.][0-9]{2}$")
+# 版本号本体是 X.Y.Z，不带 v 前缀；标签名是它前面加 v。
+SEMVER_RE = re.compile(r"^[0-9]+[.][0-9]+[.][0-9]+$")
+TAG_RE = re.compile(r"^v[0-9]+[.][0-9]+[.][0-9]+$")
 COMMIT_RE = re.compile(
     r"^(?P<type>[a-z]+)(?:[(](?P<scope>[^)]*)[)])?(?:!)?:[ \t]*(?P<subject>.+)$",
     re.IGNORECASE,
 )
+# 迁移到 X.Y.Z 之前用过日期式标签，历史 Release 仍在认它，否则会被当成不存在。
 DATE_TAG_RE = re.compile(r"^v[0-9]{4}[.][0-9]{2}[.][0-9]{2}[.](?:[0-9]{2}|[0-9]{4})$")
 
 FEATURE_TYPES = {"feat", "feature"}
@@ -24,6 +26,11 @@ FIX_TYPES = {"fix", "bugfix", "perf"}
 
 class ReleaseError(RuntimeError):
     """A release precondition or publication step failed."""
+
+
+def is_release_tag(tag):
+    """判断标签是不是发布标签：X.Y.Z 与迁移前的日期式都算。"""
+    return bool(TAG_RE.fullmatch(tag) or DATE_TAG_RE.fullmatch(tag))
 
 
 def default_skill_repo():
@@ -47,9 +54,9 @@ def command(cmd, cwd=None, env=None):
         raise ReleaseError("命令失败（退出码 " + str(result.returncode) + "）: " + " ".join(cmd))
 
 
-def release_exists(public_repo, version):
+def release_exists(public_repo, tag):
     result = subprocess.run(
-        ["gh", "release", "view", version, "--repo", public_repo],
+        ["gh", "release", "view", tag, "--repo", public_repo],
         text=True,
         capture_output=True,
         check=False,
@@ -59,10 +66,10 @@ def release_exists(public_repo, version):
     error = (result.stderr or result.stdout).lower()
     if "release not found" in error or "not found" in error:
         return False
-    raise ReleaseError("无法检查公共 Release " + version + ": " + (result.stderr or result.stdout).strip())
+    raise ReleaseError("无法检查公共 Release " + tag + ": " + (result.stderr or result.stdout).strip())
 
 
-def previous_release_tag(public_repo, current_version):
+def previous_release_tag(public_repo, current_tag):
     result = subprocess.run(
         [
             "gh",
@@ -88,15 +95,18 @@ def previous_release_tag(public_repo, current_version):
     published = []
     for release in releases:
         tag = release.get("tagName")
-        if not tag or not DATE_TAG_RE.fullmatch(tag):
+        # 只认发布标签：X.Y.Z 与迁移前的日期式，其他标签不算上一个版本。
+        if not tag or not is_release_tag(tag):
             continue
-        if tag == current_version:
+        # 当前这个标签本身要跳过，否则变更范围会退化成空区间。
+        if tag == current_tag:
             continue
         if release.get("isDraft") or release.get("isPrerelease"):
             continue
         if not release.get("publishedAt"):
             continue
         published.append(release)
+    # 按发布时间排序而不是按版本号排序：迁移前后两种标签形态混在一起时只有时间可比。
     published.sort(key=lambda item: item["publishedAt"], reverse=True)
     if not published:
         return None
@@ -155,7 +165,7 @@ def public_subject(subject):
     return subject.rstrip("。．")
 
 
-def release_notes(version, previous_tag, repo, notes_file):
+def release_notes(tag, previous_tag, repo, notes_file):
     if notes_file:
         notes = notes_file.read_text(encoding="utf-8").strip()
         if not notes:
@@ -186,9 +196,9 @@ def release_notes(version, previous_tag, repo, notes_file):
         return lines
 
     if previous_tag:
-        change_range = "`" + previous_tag + "` → `" + version + "`"
+        change_range = "`" + previous_tag + "` → `" + tag + "`"
     else:
-        change_range = "首次日期版本"
+        change_range = "首次发布"
     lines = [
         "## 🚀 发布说明",
         "本版本变更范围：" + change_range + "。",
@@ -209,18 +219,18 @@ def release_notes(version, previous_tag, repo, notes_file):
         "## 🔐 版本信息",
         "| 项目 | 版本 |",
         "| --- | --- |",
-        "| Release | `" + version + "` |",
-        "| CLI | `" + version + "` |",
-        "| skill | `" + version + "` |",
+        "| Release | `" + tag + "` |",
+        "| CLI | `" + tag + "` |",
+        "| skill | `" + tag + "` |",
         "",
-        "本地 `VERSION` 文件与 Release 标签相同。使用前请先更新到最新版本。",
+        "本地 `VERSION` 文件写版本号本体（不带 `v` 前缀），与 Release 标签一致。使用前请先更新到最新版本。",
     ]
     return "\n".join(lines) + "\n"
 
 
-def remote_tag_exists(repo, version):
+def remote_tag_exists(repo, tag):
     result = subprocess.run(
-        ["git", "ls-remote", "--exit-code", "--tags", "origin", "refs/tags/" + version],
+        ["git", "ls-remote", "--exit-code", "--tags", "origin", "refs/tags/" + tag],
         cwd=repo,
         text=True,
         capture_output=True,
@@ -233,9 +243,9 @@ def remote_tag_exists(repo, version):
     raise ReleaseError("无法检查远端标签: " + (result.stderr or result.stdout).strip())
 
 
-def local_tag_exists(repo, version):
+def local_tag_exists(repo, tag):
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", "refs/tags/" + version],
+        ["git", "rev-parse", "--verify", "refs/tags/" + tag],
         cwd=repo,
         text=True,
         capture_output=True,
@@ -244,27 +254,27 @@ def local_tag_exists(repo, version):
     return result.returncode == 0
 
 
-def tagged_commit(repo, version):
-    return command_text(["git", "rev-parse", version + "^{commit}"], cwd=repo)
+def tagged_commit(repo, tag):
+    return command_text(["git", "rev-parse", tag + "^{commit}"], cwd=repo)
 
 
-def push_annotated_tag(repo, version, message):
-    local_tag = local_tag_exists(repo, version)
-    remote_tag = remote_tag_exists(repo, version)
-    tag_args = ["git", "tag", "-a", version, "-m", message]
+def push_annotated_tag(repo, tag, message):
+    local_tag = local_tag_exists(repo, tag)
+    remote_tag = remote_tag_exists(repo, tag)
+    tag_args = ["git", "tag", "-a", tag, "-m", message]
     if local_tag:
         tag_args.insert(2, "-f")
     command(tag_args, cwd=repo)
-    push_args = ["git", "push", "origin", version]
+    push_args = ["git", "push", "origin", tag]
     if remote_tag:
         push_args.insert(2, "--force")
     command(push_args, cwd=repo)
 
 
-def confirm_tag_at_head(repo, version):
+def confirm_tag_at_head(repo, tag):
     head = command_text(["git", "rev-parse", "HEAD"], cwd=repo)
-    if tagged_commit(repo, version) != head:
-        raise ReleaseError(str(repo) + " 的标签 " + version + " 没有指到当前 HEAD")
+    if tagged_commit(repo, tag) != head:
+        raise ReleaseError(str(repo) + " 的标签 " + tag + " 没有指到当前 HEAD")
 
 
 def porcelain_paths(repo):
@@ -301,13 +311,63 @@ def read_version(repo):
 
 
 def write_version(repo, version):
+    # VERSION 文件只写版本号本体，不带 v 前缀，CLI 与用户直接引用它。
     (repo / "VERSION").write_text(version + "\n", encoding="utf-8")
 
 
 def commit_version(repo, version):
     command(["git", "add", "VERSION"], cwd=repo)
-    command(["git", "commit", "-m", "chore(release): 🚀 发布 easy-qfnu " + version], cwd=repo)
+    command(["git", "commit", "-m", "chore(release): 发布 easy-qfnu " + version], cwd=repo)
     command(["git", "push", "origin", "HEAD"], cwd=repo)
+
+
+def parse_version(text):
+    """把 X.Y.Z 拆成三个整数；不是这个形式时返回 None。"""
+    if not SEMVER_RE.fullmatch(str(text or "")):
+        return None
+    parts = str(text).split(".")
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+def bump_version(text, level):
+    """按 patch/minor/major 递增版本号，返回 (新版本, 失败说明)。"""
+    parts = parse_version(text)
+    # 读不出三段数字时不猜，交给调用方去要一个显式版本号。
+    if parts is None:
+        return None, "当前 VERSION 不是 X.Y.Z 形式，无法递增: " + str(text)
+    major, minor, patch = parts
+    # 主版本递增清空后两位：下游可以只按主版本号判断兼容性。
+    if level == "major":
+        return str(major + 1) + ".0.0", None
+    # 次版本递增清空补丁位：新增能力不影响已有用法。
+    if level == "minor":
+        return str(major) + "." + str(minor + 1) + ".0", None
+    # 剩下只可能是 patch：修复与内部改动。
+    return str(major) + "." + str(minor) + "." + str(patch + 1), None
+
+
+def resolve_version(repo, args):
+    """定下本次发布的版本号，返回 (版本号, 失败说明)。
+
+    --version 与 --bump 必须二选一：迁移到 X.Y.Z 的第一版或重新发布历史版本时直接给版本号，
+    平常发布给递增级别，由脚本从 VERSION 文件推出下一个版本。
+    """
+    # 两个都给说明用户没想清要发哪个版本，直接拒绝而不是猜一个。
+    if args.version and args.bump:
+        return None, "--version 与 --bump 只能给一个"
+    # 显式版本号：迁移首版与重发历史版本走这条。
+    if args.version:
+        # 版本号本体不带 v 前缀，带 v 的写法属于标签名，直接拒绝。
+        if parse_version(args.version) is None:
+            return None, "版本号必须是 X.Y.Z 形式（不带 v 前缀）: " + str(args.version)
+        return args.version, None
+    # 没声明递增级别时不猜，避免把不兼容变更静默发成补丁版本。
+    if not args.bump:
+        return None, "必须用 --bump patch|minor|major 声明递增级别，或用 --version 直接指定版本号"
+    next_version, error = bump_version(read_version(repo), args.bump)
+    if error is not None:
+        return None, error + "；迁移到 X.Y.Z 的第一版请用 --version 指定，例如 --version 1.0.0"
+    return next_version, None
 
 
 def validate_repo(repo):
@@ -330,19 +390,19 @@ def run_checks(repo):
     command([sys.executable, "-m", "unittest", "discover", "-s", "python/tests"], cwd=repo, env=env)
 
 
-def publish_github_release(public_repo, version, notes, existing_release):
+def publish_github_release(public_repo, tag, notes, existing_release):
     if existing_release:
-        command(["gh", "release", "delete", version, "--repo", public_repo, "--yes"])
+        command(["gh", "release", "delete", tag, "--repo", public_repo, "--yes"])
     command(
         [
             "gh",
             "release",
             "create",
-            version,
+            tag,
             "--repo",
             public_repo,
             "--title",
-            version,
+            tag,
             "--notes",
             notes,
         ]
@@ -350,21 +410,24 @@ def publish_github_release(public_repo, version, notes, existing_release):
 
 
 def parse_args():
-    today = dt.datetime.now().astimezone().strftime("v%Y.%m.%d.%H")
-    parser = argparse.ArgumentParser(description="Publish easy-qfnu date releases")
+    parser = argparse.ArgumentParser(description="Publish easy-qfnu SemVer releases")
     parser.add_argument("--repo", type=Path, default=None, help="local skill repository")
     parser.add_argument("--public-repo", default=None, help="public release repository")
-    parser.add_argument("--version", default=today, help="date tag (default: " + today + ")")
+    parser.add_argument(
+        "--bump",
+        choices=("patch", "minor", "major"),
+        default=None,
+        help="从 VERSION 递增版本号；与 --version 二选一",
+    )
+    parser.add_argument("--version", default=None, help="直接指定 X.Y.Z；与 --bump 二选一")
     parser.add_argument("--notes-file", type=Path, default=None, help="可选的 Release 文案文件")
     parser.add_argument("--publish", action="store_true", help="write VERSION, create/push tag and upload release")
-    parser.add_argument("--replace", action="store_true", help="replace an existing same-hour tag/release")
+    parser.add_argument("--replace", action="store_true", help="replace an existing tag/release")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if not VERSION_RE.fullmatch(args.version):
-        raise ReleaseError("版本必须使用 vYYYY.MM.DD.HH 格式，例如 v2026.08.30.14")
     default_repo = default_skill_repo()
     repo = (args.repo or Path(os.environ.get("EASY_QFNU_SKILL_REPO", default_repo))).expanduser().resolve()
     public_repo = args.public_repo or os.environ.get("EASY_QFNU_PUBLIC_REPO", "w1ndys/easy-qfnu-skill")
@@ -374,16 +437,22 @@ def main():
         raise ReleaseError("找不到 Release 文案文件: " + str(args.notes_file))
 
     validate_repo(repo)
-    assert_clean(repo, allowed={"VERSION"} if read_version(repo) != args.version else set())
+    version, version_error = resolve_version(repo, args)
+    # 版本号定不下来时不进入后续检查，避免打出一个猜出来的标签。
+    if version_error is not None:
+        raise ReleaseError(version_error)
+    # 标签名是版本号本体加 v 前缀，git 与 gh 都用它。
+    tag = "v" + version
+    assert_clean(repo, allowed={"VERSION"} if read_version(repo) != version else set())
     command(["gh", "auth", "status"])
     run_checks(repo)
 
-    previous_tag = previous_release_tag(public_repo, args.version)
-    notes = release_notes(args.version, previous_tag, repo, args.notes_file)
+    previous_tag = previous_release_tag(public_repo, tag)
+    notes = release_notes(tag, previous_tag, repo, args.notes_file)
     print("源码仓库: " + str(repo))
     print("目标 Release: " + public_repo)
-    print("上一个 Release: " + (previous_tag or "无（首次日期版本）"))
-    print("VERSION/Release 统一版本: " + args.version)
+    print("上一个 Release: " + (previous_tag or "无（首次发布）"))
+    print("本次版本: " + version + "（标签 " + tag + "）")
     print("当前 VERSION: " + (read_version(repo) or "(空)"))
     print("Release 文案:")
     print(notes, end="")
@@ -393,19 +462,19 @@ def main():
         print("dry-run 完成；确认发布时加 --publish，将写入 VERSION、打标签并创建 GitHub Release。")
         return 0
 
-    existing_release = release_exists(public_repo, args.version)
-    has_local = local_tag_exists(repo, args.version)
-    has_remote = remote_tag_exists(repo, args.version)
+    existing_release = release_exists(public_repo, tag)
+    has_local = local_tag_exists(repo, tag)
+    has_remote = remote_tag_exists(repo, tag)
     if (has_local or has_remote or existing_release) and not args.replace:
-        raise ReleaseError("版本 " + args.version + " 已存在标签或 Release；如需覆盖请明确使用 --replace")
+        raise ReleaseError("版本 " + tag + " 已存在标签或 Release；如需覆盖请明确使用 --replace")
 
-    if read_version(repo) != args.version:
-        write_version(repo, args.version)
-        commit_version(repo, args.version)
-    push_annotated_tag(repo, args.version, "release(skill): 🚀 发布 easy-qfnu " + args.version)
-    confirm_tag_at_head(repo, args.version)
-    publish_github_release(public_repo, args.version, notes, existing_release)
-    print("发布完成: https://github.com/" + public_repo + "/releases/tag/" + args.version)
+    if read_version(repo) != version:
+        write_version(repo, version)
+        commit_version(repo, version)
+    push_annotated_tag(repo, tag, "release(skill): 发布 easy-qfnu " + tag)
+    confirm_tag_at_head(repo, tag)
+    publish_github_release(public_repo, tag, notes, existing_release)
+    print("发布完成: https://github.com/" + public_repo + "/releases/tag/" + tag)
     return 0
 
 
