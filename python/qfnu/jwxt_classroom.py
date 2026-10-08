@@ -108,6 +108,8 @@ CACHE_ENV_VAR = "QFNU_CLASSROOM_CACHE_PATH"
 CACHE_DIR_NAME = "classroom-schedule"
 # 学期缓存文件名后缀，学期值加它拼成 <学期>.json。
 SEMESTER_CACHE_SUFFIX = ".json"
+# 本地累计里内容不合法的学期文件的警告前缀，后面接学期与具体原因。
+LOCAL_CACHE_BAD_WARNING = "本地累计学期缓存不可用，已跳过: "
 # 缓存有效期天数：超过 7 日才刷新，正好满 7 日仍算可用。
 CACHE_TTL_DAYS = 7
 # 缓存时间戳的时区：教务在东八区，写入时间固定带 +08:00。
@@ -928,14 +930,19 @@ def schedule_room_names(semester_rooms):
     return names
 
 
-def room_universe_index(roster, semester_rooms):
-    """取 教室名 → 来源信息 的索引：总表展开出的教室，加上只在课表首格出现过的教室。
+def room_universe_index(roster, semester_rooms, observed_rooms=None, response_names=()):
+    """取 教室名 → 来源信息 的索引：总表展开出的教室，加上课表首格见过的教室。
 
-    总表里的教室带 jsid 与来源展示名；只在课表里出现的教室 jsid 为空，来源展示名就是它自己。
-    取并集是因为总表是快照，学校新加的教室会先出现在课表里。
+    课表来源有三份：本学年各学期缓存的教室名、缓存目录里所有学期（不限本学年、不限是否过期）的本地
+    累计，与本次查询课表首格展开出的教室名；后两份只扩大全集（影响全年无课计数），不参与候选集。总表
+    里的教室带 jsid 与来源展示名；只在课表里出现的教室 jsid 为空，来源展示名就是它自己。取并集是因为
+    总表是快照，学校新加的教室会先出现在课表里，不并进来就会静默漏报。
     """
     index = dictionary_room_index(roster)
-    for name in schedule_room_names(semester_rooms):
+    names = set(response_names or ())
+    names |= schedule_room_names(semester_rooms)
+    names |= schedule_room_names(observed_rooms)
+    for name in names:
         # 总表里已经有这间教室时不覆盖它的 jsid 与来源展示名。
         if name in index:
             continue
@@ -1035,9 +1042,10 @@ def merged_room_warnings(names, index):
     """取同名多条总表记录的教室的合并警告：这些教室的 jsid 取不出唯一值。"""
     warnings = []
     for name in sorted(names):
-        # jsid 为空说明这间教室对应多条总表记录，展示名相同但身份不唯一。
-        # jsid 为空说明这间教室对应多条总表记录，展示名相同但身份不唯一。
-            warnings.append(MERGED_ROOM_WARNING + name)
+        # 只有 merged 为真的教室才对应多条总表记录；别的教室 jsid 取不出唯一值是因为它只出现在课表里。
+        if not (index.get(name) or {}).get("merged"):
+            continue
+        warnings.append(MERGED_ROOM_WARNING + name)
     return warnings
 
 
@@ -1064,19 +1072,23 @@ def empty_room_results(names, index, occupancy_map, weekday):
     return rooms
 
 
-def reverse_room_sets(roster, semester_rooms, parsed, params):
+def reverse_room_sets(roster, semester_rooms, parsed, params, observed_rooms=None):
     """反推候选集、指定教室集、占用集与全年无课集，返回 (集合, 失败结果)。
 
     集合含 index、blocks、candidates、year_round_idle、selected、occupied 与 occupancy_map。
-    目标学期名单不完整，或本学年既没有完整秋季也没有完整春季时返回失败结果：这两种情况下
-    缺失的行都不能被解释成不上课。
+    semester_rooms 只是本学年各学期的教室名，observed_rooms 是缓存目录里所有学期的本地累计，本次课表
+    首格展开出的教室名算第三份课表来源；后两份只参与全集与全年无课计数，不参与候选集，所以往期教室不会
+    进结果。目标学期名单不完整，或本学年既没有完整秋季也没有完整春季时返回失败结果：这两种情况下缺失的
+    行都不能被解释成不上课。
     """
     blocks = query_blocks(params["period_start"], params["period_end"])
     # 大节范围取不出覆盖块时判定不出占用，属于调用顺序错误。
     if not blocks:
         return None, failure("jwxt", "大节范围取不出覆盖块，无法判定占用", PARAM_HINT)
     semester = str(params["semester"])
-    index = room_universe_index(roster, semester_rooms)
+    # 全集三来源：内置快照、本学年学期缓存与本地累计、本次课表首格；后两者只扩大全集与无课计数。
+    response_names = parsed_room_names(parsed)
+    index = room_universe_index(roster, semester_rooms, observed_rooms, response_names)
     evidence, complete = semester_evidence_rooms(semester_rooms)
     target_rooms = (semester_rooms or {}).get(semester) or ()
     # 目标学期名单低于完整阈值时停止反推：缺失的行不能被解释成不上课。
@@ -1099,16 +1111,17 @@ def reverse_room_sets(roster, semester_rooms, parsed, params):
     }, None
 
 
-def empty_classroom_result(roster, semester_rooms, parsed, params, cache=None):
+def empty_classroom_result(roster, semester_rooms, parsed, params, cache=None, observed_rooms=None):
     """反推不上课教室并组装完整结果信封。
 
     roster 是 load_roster 的结果（沿用既有字典解析的形状），semester_rooms 是 学期 → 该学期
     展开出的教室名列表，parsed 是本次课表的解析结果，params 是 validate_query 通过的参数，
-    cache 由调用方（编排）传入，默认空字典。函数不读时钟、不发请求、不读写缓存：结果集由
-    指定教室集减去占用集得到，因此这周这天整天没课、不出现在响应里的教室照样进结果。目标
-    学期不完整，或本学年没有完整秋春时返回失败结果，且不含 rooms。
+    cache 由调用方（编排）传入，默认空字典，observed_rooms 是缓存目录里所有学期的本地累计教室名
+    （只扩大全集）。函数不读时钟、不发请求、不读写缓存：结果集由指定教室集减去占用集得到，因此
+    这周这天整天没课、不出现在响应里的教室照样进结果。目标学期不完整，或本学年没有完整秋春时返回
+    失败结果，且不含 rooms。
     """
-    sets, error = reverse_room_sets(roster, semester_rooms, parsed, params)
+    sets, error = reverse_room_sets(roster, semester_rooms, parsed, params, observed_rooms)
     # 停止反推的两种情形由 reverse_room_sets 说明，失败结果里没有 rooms。
     if error is not None:
         return error
@@ -1332,6 +1345,74 @@ def read_semester_cache(semester):
     if str(payload.get("semester") or "") != str(semester or "").strip():
         return None
     return payload
+
+
+def local_cache_semesters():
+    """列出缓存目录里所有学期缓存对应的学期值，返回排序去重后的列表。
+
+    只认文件名形如 <学期>.json 且学期格式合法的普通文件：dictionary.json、随机名、别的后缀与
+    「全部」这类非学期值都不是学期缓存。目录还不存在（第一次查询）时没有本地累计，返回空列表。
+    """
+    directory = cache_dir()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        # 缓存目录还不存在时列不出任何文件，按没有本地累计处理。
+        return []
+    found = []
+    # 逐个文件名判断它是不是学期缓存：只有合法学期值加 .json 的普通文件才算数。
+    for name in names:
+        # 后缀不是 .json 的文件名不是学期缓存，跳过。
+        if not name.endswith(SEMESTER_CACHE_SUFFIX):
+            continue
+        semester = name[: -len(SEMESTER_CACHE_SUFFIX)]
+        # 学期格式不合法的文件名取不出学期值，不能当本地累计里的一份缓存。
+        if parse_semester(semester) is None:
+            continue
+        # 同名目录不是缓存文件，里面读不出教室名。
+        if not os.path.isfile(os.path.join(directory, name)):
+            continue
+        found.append(semester)
+    return sorted(set(found))
+
+
+def local_cache_rooms(semester, payload):
+    """取一份学期缓存里的教室名列表，返回 (教室名列表, 失败说明)。
+
+    内容不合法（读不出、rooms 不是数组、文件里的学期与文件名不一致）时返回 (None, 原因)：这类文件
+    不能当成该学期的教室名，调用方跳过它并记一条警告。
+    """
+    # 文件读不出或不是对象时取不出任何教室名。
+    if payload is None:
+        return None, "读不出或不是对象"
+    rooms = payload.get("rooms")
+    # rooms 不是数组说明这份缓存的字段不全，不能拿它当教室名列表。
+    if not isinstance(rooms, list):
+        return None, "rooms 不是数组"
+    # 文件里的学期与文件名不一致说明文件被换过，取不出可信的学期归属。
+    if str(payload.get("semester") or "") != semester:
+        return None, "文件里的学期与文件名不一致"
+    return [str(name) for name in rooms], ""
+
+
+def read_local_semester_rooms():
+    """读缓存目录里所有学期（不限本学年、不限是否过期）缓存到的教室名。
+
+    返回 (学期 → 教室名列表, 警告列表)。内容不合法的文件跳过并记一条警告，不抛异常：本地累计只用
+    来扩大全集与全年无课计数，个别文件坏掉不影响结果对不对。这些文件是长期资产，过期只表示该重新
+    拉取，这里不删任何文件。
+    """
+    rooms_by_semester = {}
+    warnings = []
+    # 每个学期文件各读一次，坏掉的跳过并记警告，其他学期的教室名照样凑进本地累计。
+    for semester in local_cache_semesters():
+        rooms, reason = local_cache_rooms(semester, read_cache_file(semester_cache_path(semester)))
+        # 内容不合法时跳过这份缓存：少一个学期的教室名只让全集小一点，不必让查询失败。
+        if rooms is None:
+            warnings.append(LOCAL_CACHE_BAD_WARNING + semester + "（" + reason + "）")
+            continue
+        rooms_by_semester[semester] = rooms
+    return rooms_by_semester, warnings
 
 
 def write_semester_cache_from_page(semester, kbjcmsid, raw, fetched_at=None):
@@ -1766,9 +1847,9 @@ def query_empty_classrooms(
     client 是已登录的只读会话（有 text 方法即可），后 7 个参数对应 CLI 的 --semester、--week、
     --week-end、--weekday、--period-start、--period-end 与 --keyword。调用顺序固定：清掉本进程
     上一次等到的刷新结果 → 校验参数 → 读父页 → 载入内置教室总表（本地文件，不发请求）→ 补齐本
-    学年学期缓存 → 发一次带周次与星期的课表（jc 留空）→ 反推求差。参数无效时一个上游请求都不发；
-    失败结果沿用 ok=false、error 与 hint 且不含 rooms，成功结果的 cache 字段说明本次用了哪些学期
-    与总表快照的口径。
+    学年学期缓存 → 读缓存目录里所有学期的本地累计 → 发一次带周次与星期的课表（jc 留空）→ 反推
+    求差。参数无效时一个上游请求都不发；失败结果沿用 ok=false、error 与 hint 且不含 rooms，成功
+    结果的 cache 字段说明本次用了哪些学期、本地累计到哪些学期与总表快照的口径。
     """
     # 本次查询自己去刷新资源，不复用本进程上一次查询等到的结果。
     reset_serial_refresh()
@@ -1795,6 +1876,9 @@ def query_empty_classrooms(
     # 会话中途失效或某个学期没有可用缓存时停下：全年无课名单不完整。
     if error is not None:
         return error
+    # 本地累计：缓存目录里所有学期（不限本学年、不限是否过期）的教室名，只扩大全集与全年无课
+    # 计数；往期教室不进候选集，所以结果集与有没有它无关。坏文件跳过并记警告，不中断查询。
+    local_rooms, local_warnings = read_local_semester_rooms()
     parsed, error = query_page_of(client, params, roster, page["kbjcmsid"])
     # 课表不可用（登录页、互踢、缺表、格数不是 35、节次出错）时失败结果里不含 rooms。
     if error is not None:
@@ -1804,6 +1888,11 @@ def query_empty_classrooms(
         "refreshed_semesters": refreshed,
         "stale_semesters": stale,
         "roster": roster_cache_fields(roster),
+        # 本次构成全集的本地累计学期列表，排序去重；与快照口径互不影响。
+        "observed_semesters": sorted(local_rooms),
     }
-    result = empty_classroom_result(roster, rooms_by_semester, parsed, params, cache)
-    return with_plan_warnings(result, warnings)
+    result = empty_classroom_result(
+        roster, rooms_by_semester, parsed, params, cache, local_rooms
+    )
+    # 本学年下拉的格式问题与本地累计的坏文件都要让用户看到，合并进同一个 warnings 字段。
+    return with_plan_warnings(result, warnings + local_warnings)
