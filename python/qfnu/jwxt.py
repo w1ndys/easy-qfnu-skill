@@ -9,6 +9,7 @@ from .jwxt_auth import (
     default_captcha_output,
     load_credentials_file,
     login,
+    resolve_week,
     status,
 )
 from .jwxt_classroom import filter_free_rooms, query_empty_classrooms
@@ -53,11 +54,15 @@ FREE_SWITCH_OPTIONS = (
 
 
 def _action_classrooms(client, command):
-    """查不上课教室：参数交给编排层校验与查询，再按已打开的空闲开关在本地过滤结果。"""
+    """查不上课教室：--week 省略时先探测当前教学周，再交给编排层校验与查询。"""
+    week, error = resolve_week(client, command["week"])
+    # 探测不到当前教学周时不发任何空教室课表请求，把失败结果原样返回。
+    if error is not None:
+        return error
     result = query_empty_classrooms(
         client,
         command["semester"],
-        command["week"],
+        week,
         command["week_end"],
         command["weekday"],
         command["period_start"],

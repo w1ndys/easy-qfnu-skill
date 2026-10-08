@@ -9,10 +9,20 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from qfnu import jwxt_auth, jwxt_client, trace
 from qfnu.cli import run
 from qfnu.jwxt import run_jwxt
-from qfnu.jwxt_auth import encode_credentials, login_failure_hint, parse_login_message
+from qfnu.jwxt_auth import (
+    SESSION_EXPIRED_HINT,
+    WEEK_MANUAL_HINT,
+    encode_credentials,
+    fetch_teaching_week,
+    login_failure_hint,
+    parse_login_message,
+    parse_teaching_week,
+    resolve_week,
+)
 from qfnu.jwxt_auth import status as jwxt_status
 from qfnu.jwxt_client import (
     JWXT_BASE,
+    PROFILE_URL,
     JWXTClient,
     JWXTError,
     cookies_for_url,
@@ -1053,6 +1063,231 @@ class JWXTDispatchTest(unittest.TestCase):
             self.assertTrue(body["credentials_removed"])
             self.assertFalse(os.path.exists(path))
 
+# 主页周次片段：结构与真实页面一致（容器里套着 span，总周数在容器内、不在子标签里），
+# 周次、学期代码与日期全部虚构；容器外故意放上别的周次文字，用来断言取值只认容器。
+WEEK_PAGE = """
+<html><body>
+<script>var xxdm = 10446; var zc = '3'; var rq = '2026-10-08';</script>
+<div class="middletopleftdqrqbox" style="height: 12%;">
+  <div class=" pr5 middletopleftzc" id="li_showWeek">
+    <span class="main_text main_color">第3周</span>/16周
+  </div>
+  <div class="middletopleftdqrq">
+    <input type="text" id="rq" value="2026-10-08" readonly class="form-control">
+  </div>
+</div>
+<div class="middletopleftzc">第9周</div>
+<div class="main_text main_color">第21周/30周</div>
+</body></html>
+"""
+
+# 只有通用 class 没有 li_showWeek 的片段：拿到的页面给不出教学周。
+WEEK_PAGE_WITHOUT_MARKER = (
+    '<html><body><div class="middletopleftdqrqbox">'
+    '<div class="middletopleftzc">第3周</div>/16周</div></body></html>'
+)
+
+# 登录页片段：会话过期后主页返回的就是它。
+WEEK_LOGIN_PAGE = "<html><body>请输入账号 请输入密码 请输入验证码</body></html>"
+
+
+class JWXTWeekParseTest(unittest.TestCase):
+    """任务：从教务主页解析当前教学周与总周数，只吃 HTML、零网络。"""
+
+    def test_week_box_gives_current_and_total(self):
+        """真实结构的片段给出第 3 周与总 16 周。"""
+        self.assertEqual(parse_teaching_week(WEEK_PAGE), {"current": 3, "total": 16})
+
+    def test_single_quoted_id_and_reordered_attributes_are_accepted(self):
+        """单引号写法与属性顺序变化都要认：id 排在 class 前面同样能定位容器。"""
+        raw = WEEK_PAGE.replace(
+            '<div class=" pr5 middletopleftzc" id="li_showWeek">',
+            "<div id='li_showWeek' class=' pr5 middletopleftzc'>",
+        )
+        self.assertNotEqual(raw, WEEK_PAGE)
+        self.assertEqual(parse_teaching_week(raw), {"current": 3, "total": 16})
+
+    def test_page_without_the_box_gives_nothing(self):
+        """没有 li_showWeek 容器时取不出周次，不拿别的容器或正文数字顶替。"""
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE_WITHOUT_MARKER))
+
+    def test_other_numbers_on_the_page_are_ignored(self):
+        """学期代码 10446、日期与容器外的第 9 周、第 21 周都不参与取值。"""
+        week = parse_teaching_week(WEEK_PAGE)
+        self.assertNotEqual(week["current"], 9)
+        self.assertNotEqual(week["current"], 21)
+        self.assertNotEqual(week["current"], 10446)
+        self.assertEqual(week["total"], 16)
+
+    def test_zero_week_is_not_accepted(self):
+        """第 0 周不是真实教学周，按探测失败处理。"""
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE.replace("第3周", "第0周")))
+
+    def test_week_above_thirty_is_not_accepted(self):
+        """超过 30 周的当前周次与总周数都按探测失败处理。"""
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE.replace("第3周", "第31周")))
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE.replace("/16周", "/31周")))
+
+    def test_non_numeric_week_is_not_accepted(self):
+        """周次位置上不是数字时取不出周次。"""
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE.replace("第3周", "第A周")))
+
+    def test_missing_total_is_not_accepted(self):
+        """缺总周数时两个值不齐，按探测失败处理。"""
+        self.assertIsNone(parse_teaching_week(WEEK_PAGE.replace("/16周", "")))
+
+    def test_box_without_closing_tag_is_not_accepted(self):
+        """容器没有闭合标签时范围不确定，按取不出周次处理。"""
+        self.assertIsNone(parse_teaching_week('<div id="li_showWeek"><span>第3周</span>/16周'))
+
+
+class FakeTextClient:
+    """假客户端：只实现 text，按队列给响应并记录每次请求。"""
+
+    def __init__(self, responses):
+        # 逐次调用要返回的 (状态码, 正文)，也可以是表示传输失败的异常。
+        self.responses = list(responses)
+        # 每次请求的方法与地址，供用例断言探了哪一页、探了几次。
+        self.calls = []
+
+    def text(self, method, target, body=None, headers=None, same_origin=False):
+        """按 JWXTClient.text 的返回形状给出 (状态码, 最终地址, 正文)。"""
+        del body, headers, same_origin
+        self.calls.append((method, target))
+        # 队列里没有响应说明代码多发了一次请求，直接报错而不是继续编造正文。
+        if not self.responses:
+            raise AssertionError("unexpected extra request: " + method + " " + target)
+        item = self.responses.pop(0)
+        # 队列项是异常时按传输失败抛出，用来模拟网络错误。
+        if isinstance(item, Exception):
+            raise item
+        code, raw = item
+        return int(code), target, raw
+
+
+class JWXTWeekProbeTest(unittest.TestCase):
+    """任务：省略 --week 时探测当前教学周，探测失败要给出手动传 --week 的提示。"""
+
+    def test_given_week_is_used_without_any_request(self):
+        """显式传了周次就直接用它，这一步一个请求都不发。"""
+        client = FakeTextClient([])
+        self.assertEqual(resolve_week(client, "6"), ("6", None))
+        self.assertEqual(client.calls, [])
+
+    def test_empty_week_probes_the_profile_page(self):
+        """空周次时读主页探测，并把当前周次交给查询。"""
+        client = FakeTextClient([("200", WEEK_PAGE)])
+        self.assertEqual(resolve_week(client, ""), ("3", None))
+        self.assertEqual(client.calls, [("GET", PROFILE_URL)])
+
+    def test_probe_without_marker_asks_for_a_manual_week(self):
+        """页面拿到了但没有周次标记时报无法自动获取，并提示手动传 --week。"""
+        client = FakeTextClient([("200", WEEK_PAGE_WITHOUT_MARKER)])
+        info, error = fetch_teaching_week(client)
+        self.assertIsNone(info)
+        self.assertFalse(error["ok"])
+        self.assertIn("无法自动获取当前教学周", error["error"])
+        self.assertEqual(error["hint"], WEEK_MANUAL_HINT)
+        self.assertIn("--week", error["hint"])
+
+    def test_probe_on_login_page_reports_the_expired_session(self):
+        """主页返回登录页说明会话已过期，提示与 status 的过期口径是同一句。"""
+        client = FakeTextClient([("200", WEEK_LOGIN_PAGE)])
+        info, error = fetch_teaching_week(client)
+        self.assertIsNone(info)
+        self.assertIn("会话已过期", error["error"])
+        self.assertEqual(error["hint"], SESSION_EXPIRED_HINT)
+
+    def test_probe_transport_and_http_failures_ask_for_a_manual_week(self):
+        """非 200 与网络失败都拿不到页面，同样提示手动传 --week。"""
+        for response in (("500", ""), OSError("probe boom")):
+            with self.subTest(response=response):
+                client = FakeTextClient([response])
+                info, error = fetch_teaching_week(client)
+                self.assertIsNone(info)
+                self.assertEqual(error["hint"], WEEK_MANUAL_HINT)
+
+    def test_resolve_week_hands_the_probe_failure_back(self):
+        """探测失败时 resolve_week 把失败原样交出，周次返回空串。"""
+        client = FakeTextClient([("200", WEEK_PAGE_WITHOUT_MARKER)])
+        week, error = resolve_week(client, "")
+        self.assertEqual(week, "")
+        self.assertFalse(error["ok"])
+
+
+class JWXTStatusWeekTest(unittest.TestCase):
+    """任务：status 带上探测到的周次与总周数；探测不到时既有语义与字段都不变。"""
+
+    MAIN_PAGE = "教学一体化服务平台"
+
+    def status_client(self, temp, profile_response, calls):
+        """造一个只走假响应的会话：主页给成功标记，资料页按传入的响应交正文。"""
+        client = JWXTClient(os.path.join(temp, "session.json"))
+        client.meta["username"] = "student"
+        client.jar.set_cookie(
+            make_cookie("JSESSIONID", "active", "/", "zhjw.qfnu.edu.cn", False, None)
+        )
+
+        def fake_request(method, target, body=None, headers=None, same_origin=False):
+            """按目标地址给响应：资料页那一条用调用方传入的，其余给主页成功标记。"""
+            del method, body, headers, same_origin
+            calls.append(target)
+            # 资料页这一条交给调用方决定：有标记、没有标记或传输失败都能覆盖。
+            if target == PROFILE_URL:
+                return profile_response(target)
+            return 200, target, self.MAIN_PAGE.encode()
+
+        client.request = fake_request
+        return client
+
+    def test_status_adds_the_week_from_the_profile_page(self):
+        """资料页有周次标记时 status 带上 week，且资料页只请求一次。"""
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            client = self.status_client(
+                temp, lambda target: (200, target, WEEK_PAGE.encode()), calls
+            )
+            result = jwxt_status(client)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["logged_in"])
+        self.assertFalse(result["session_expired"])
+        self.assertEqual(result["week"], {"current": 3, "total": 16})
+        # 周次复用资料补全那次响应，不为周次再发一次请求。
+        self.assertEqual(calls.count(PROFILE_URL), 1)
+
+    def test_status_stays_successful_without_the_week_marker(self):
+        """探测不到周次时仍是 ok:true，没有 week 字段，既有字段一个都没变。"""
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            client = self.status_client(
+                temp,
+                lambda target: (200, target, WEEK_PAGE_WITHOUT_MARKER.encode()),
+                calls,
+            )
+            result = jwxt_status(client)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["logged_in"])
+        self.assertFalse(result["session_expired"])
+        self.assertNotIn("week", result)
+        self.assertIn("profile", result)
+        self.assertIn("session_path", result)
+        self.assertEqual(calls.count(PROFILE_URL), 1)
+
+    def test_status_without_the_profile_page_has_no_week(self):
+        """资料页拿不到时 status 依旧成功，只带资料补全警告、不带 week。"""
+
+        def failing_profile_page(target):
+            """资料页请求直接失败，模拟网络错误。"""
+            del target
+            raise OSError("profile boom")
+
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            client = self.status_client(temp, failing_profile_page, calls)
+            result = jwxt_status(client)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("week", result)
+        self.assertIn("资料补全", result.get("profile_warning", ""))
 
 if __name__ == "__main__":
     unittest.main()
