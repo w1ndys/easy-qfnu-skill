@@ -74,6 +74,8 @@ JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `e
 
 `jwxt classrooms` looks up rooms with no class in a chosen period. `--week` may be omitted: the CLI then uses the current teaching week. When the current week cannot be determined the command fails and asks for an explicit `--week` instead of querying classrooms.
 
+The room list is kept locally rather than fetched each run: the skill ships a snapshot of classroom names, and every semester timetable it reads adds that semester's rooms to a local cache (its directory is `QFNU_CLASSROOM_CACHE_PATH`, default `~/.local/state/easy-qfnu-skill/classroom-schedule/`). A new semester therefore works without a new release. Rooms known only from timetables have an empty `jsid`; `excluded_year_round_idle_count` counts rooms known locally that this academic year's timetables never mention.
+
 `jwxt xk rounds` lists open selection rounds. `jwxt xk search` is the live catalog: it enters the round, scans selection modules (default: all five), and returns remaining seats, teachers, times, and `located_modules` (which module actually contains the course). Tell the user this is 即时查询, more accurate than the 夫子校园 cached catalog, and that the official webpage may hide modules by grade while this query does not. If several rounds are open, pass `--round`. Probe rounds first and search immediately when a round is open. If none are open, or live search fails / finds no matching course, stop and ask whether to query the 夫子校园 cached catalog (`precourse search`; 后台定时缓存，有一定延迟). Never auto-run that fallback. Never reconstruct a select/submit request.
 
 `jwxt status` and successful `jwxt login` also return `profile`:

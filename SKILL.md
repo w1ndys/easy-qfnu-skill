@@ -112,6 +112,8 @@ easy-qfnu jwxt forget-credentials            # clear saved credentials only
 
 `jwxt status` is decided by the server, not by the local session file: no session, an expired session, and a failed check all return `ok: false` with `logged_in: false` and `session_expired` (`false` / `true` / `null`). Only a live session returns `ok: true` with `logged_in: true`. A live session also reports the current teaching week as `week` (`current` plus `total` weeks in the semester) when the page provides it; when it cannot be read the field is omitted and `ok` stays `true`.
 
+`jwxt classrooms` needs no setup beyond a live session: the room list comes from a snapshot shipped with the skill plus whatever rooms earlier runs have already cached locally, so a new semester keeps working without a new release.
+
 Prefer `QFNU_JWXT_PASSWORD` or `--save-credentials yes` over an inline `--password`: command-line arguments stay visible to other local processes, and agents often log the full command.
 
 The default JWC channel is `notices`, the homepage “重要通知” feed. See `references/jwc.md` for the full map, `references/jwxt.md` for JWXT login details, `references/freshman.md` for the question-bank API, `references/precourses.md` for the public pre-course query, `references/recommendations.md` for public teacher recommendations, and `references/library.md` for the library seat-availability contract.
