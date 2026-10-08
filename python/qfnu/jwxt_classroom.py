@@ -1,10 +1,14 @@
-"""查无上课教室的纯规则：参数校验、本学年学期列表、节次块与名称规范化。
+"""查无上课教室的纯规则：参数校验、本学年学期列表、父页与课表解析。
 
 本模块只放不联网的规则，请求与编排在后续任务里接上。
 """
 
+import json
 import re
 
+from .jwxt_auth import contains_any, strip_tags
+from .jwxt_html import LOGIN_MARKERS, attr, parse_table_html
+from .jwxt_schedule import KBTABLE_RE
 from .result import failure
 
 # 学期格式：YYYY-YYYY-N，末位 1 秋、2 春、3 夏。
@@ -53,6 +57,52 @@ ROOM_HEAD_RE = re.compile(r"[A-Za-z]*")
 
 # 合称分隔符：顿号、半角句点和空白。
 ROOM_SEPARATOR_RE = re.compile(r"[、.\s]+")
+
+# 父页成功标题，标题不符说明拿到的不是教室课表页。
+CLASSROOM_TITLE = "全校性教室课表"
+
+# 父页表单里学期与节次模式两个字段名，解析时按字段名定位控件。
+SEMESTER_FIELD = "xnxqh"
+MODE_FIELD = "kbjcmsid"
+
+# 登录页标题字样，与正文的 LOGIN_MARKERS 一起判定登录页。
+LOGIN_TITLE_MARKERS = ("登录", "登陆")
+
+# 正文里的会话互踢提示：与参数无关，改参数或重试都没用。
+SESSION_KICKED_TEXT = "您的账号在其它地方登录"
+
+# 正文里的非法访问提示：通常是接口路径误写成 kbxx。
+ILLEGAL_ACCESS_TEXT = "非法访问"
+
+# 正文里的节次出错提示：该学期没配课表节次，整份响应不可用。
+PERIOD_ERROR_TEXT = "查询节次出错"
+
+# 表头第 1 格文本，其后 35 格是节次块名。
+HEADER_FIRST_CELL = "教室\\节次"
+
+# 表头 35 个节次块名：5 个块按天重复，位置就是「星期 × 块」的落位口径。
+GRID_BLOCK_NAMES = tuple(name for _weekday in WEEKDAYS for name, _periods in PERIOD_BLOCKS)
+
+# 一行数据格的个数：7 天 × 5 块，表头行比它多一个「教室\节次」格。
+GRID_CELL_COUNT = len(GRID_BLOCK_NAMES)
+
+# 登录页或会话失效时的提示：只能重新登录。
+LOGIN_HINT = "请运行 easy-qfnu jwxt login 重新登录后重试"
+# 页面未被识别时的提示：路径误写成 kbxx 会返回非法访问。
+PAGE_HINT = "确认接口路径是 kbcx 后重试"
+# 父页缺少学期选中项或节次模式时的提示。
+PARENT_HINT = "请从教务侧栏重新进入「全校性教室课表」后再试"
+# 课表结构不符预期时的提示：不能按缺失的列推断空闲。
+GRID_HINT = "课表结构与预期不符，请确认教务是否改版后重试"
+# 字典不可用时的提示：旧字典能不能继续用由调用方按缓存期限判断。
+DICTIONARY_HINT = "请稍后重试；本地有 7 日内旧字典时仍可继续使用旧字典"
+
+# 页面标题，用来区分登录页、非法访问页与目标页面。
+TITLE_RE = re.compile(r"(?is)<title\b[^>]*>(.*?)</title\s*>")
+# 下拉的 option：第 1 组是完整开标签，第 2 组是显示文本。
+OPTION_RE = re.compile(r"(?is)(<option\b[^>]*>)(.*?)</option\s*>")
+# 数据格里的 div 开标签：class 带 kbcontent 就是课程块结构。
+DIV_TAG_RE = re.compile(r"(?is)<div\b([^>]*)>")
 
 
 def parse_semester(value):
@@ -308,3 +358,356 @@ def query_blocks(period_start, period_end):
         if any(start <= period <= end for period in periods):
             blocks.append(name)
     return blocks
+
+def page_title(raw):
+    """取页面标题文本；没有 title 标签时返回空串，调用方按标题不符处理。"""
+    match = TITLE_RE.search(raw)
+    # 没有标题就无从判断这是不是目标页面。
+    if match is None:
+        return ""
+    return strip_tags(match.group(1))
+
+
+def is_login_page(raw):
+    """标题含登录字样，或正文出现登录表单标记时判为登录页。"""
+    # 标题写着登录页时不必再看正文。
+    if contains_any(page_title(raw), LOGIN_TITLE_MARKERS):
+        return True
+    # 正文出现账号、密码、验证码标记说明返回的是登录表单。
+    return contains_any(raw, LOGIN_MARKERS)
+
+
+def page_failure(raw, expected_title=""):
+    """页面不可用时返回失败结果，可用时返回 None。
+
+    登录页、会话互踢提示与「非法访问」都与参数无关，先判这三类；expected_title 非空时再
+    比对标题。失败结果不含 rooms，调用方不得写缓存，也不得产生不上课教室。
+    """
+    # 登录页说明会话已失效，改参数没用，只能重新登录。
+    if is_login_page(raw):
+        return failure("jwxt", "响应是登录页，本次查询已停止", LOGIN_HINT)
+    # 互踢提示说明会话在别处登录或已过期，同样与参数无关。
+    if SESSION_KICKED_TEXT in raw:
+        message = "响应是会话互踢提示，与参数无关: " + SESSION_KICKED_TEXT
+        return failure("jwxt", message, LOGIN_HINT)
+    # 非法访问通常是接口路径误写，页面内容不是课表。
+    if ILLEGAL_ACCESS_TEXT in raw:
+        return failure("jwxt", "响应是非法访问提示，页面未被识别", PAGE_HINT)
+    # 目标页面有固定标题时，标题不符说明拿到的不是该页面。
+    if expected_title:
+        title = page_title(raw)
+        # 标题为空也算不符：只能确认它不是目标页面。
+        if title != expected_title:
+            message = "页面标题不是「" + expected_title + "」: title=" + (title or "(空)")
+            return failure("jwxt", message, PAGE_HINT)
+    return None
+
+
+def open_tag(raw, tag, field):
+    """定位 name 或 id 等于 field 的开标签，返回匹配对象；找不到返回 None。"""
+    pattern = re.compile(
+        r"(?is)<"
+        + re.escape(tag)
+        + r"\b(?=[^>]*\b(?:name|id)\s*=\s*[\"']?"
+        + re.escape(field)
+        + r"[\"'\s>])[^>]*>"
+    )
+    return pattern.search(raw)
+
+
+def select_options(raw, field):
+    """取下拉控件的 (全部 option value, 当前选中 value)。
+
+    下拉缺失、没有闭合标签或一个 option 都没有时选中值返回空串，调用方按字段缺失处理。
+    一个 option 都没写 selected 时按浏览器口径取第一项：真实父页的「时间模式」下拉只有
+    一个 option 且不带 selected，浏览器默认就选中它。
+    """
+    tag = open_tag(raw, "select", field)
+    # 没有这个下拉控件就取不出任何取值。
+    if tag is None:
+        return [], ""
+    end = raw.find("</select", tag.end())
+    # 下拉没有闭合标签时范围不确定，当作缺失。
+    if end < 0:
+        return [], ""
+    values = []
+    selected = ""
+    for option_tag, inner in OPTION_RE.findall(raw[tag.end():end]):
+        value = attr(option_tag, "value").strip()
+        # option 没写 value 时浏览器提交的是显示文本，按同一口径取值。
+        if not value:
+            value = strip_tags(inner)
+        values.append(value)
+        # 带 selected 属性的项就是当前选中项。
+        if "selected" in option_tag.lower():
+            selected = value
+    # 一个 selected 都没写时浏览器默认选中第一项，这里按同一口径取值。
+    if not selected and values:
+        selected = values[0]
+    return values, selected
+
+
+def field_value(raw, field):
+    """取字段的当前值：优先下拉选中项，其次同名输入框的 value；都没有返回空串。"""
+    _values, selected = select_options(raw, field)
+    # 下拉有选中项时它就是当前值，不必再看输入框。
+    if selected:
+        return selected
+    tag = open_tag(raw, "input", field)
+    # 没有这个输入框（或没写 value）时返回空串，调用方按字段缺失处理。
+    if tag is None:
+        return ""
+    return attr(tag.group(0), "value").strip()
+
+
+def parse_classroom_page(raw):
+    """解析教室课表父页，返回 (页面信息, 失败结果)。
+
+    页面信息含 semesters（学期下拉全部 value）、selected（当前选中学期）与 kbjcmsid。
+    登录页、非法访问、会话互踢、标题不是「全校性教室课表」，以及没有选中学期或没有节次
+    模式时返回失败结果：调用方不得继续发请求，也不得写缓存。
+    """
+    error = page_failure(raw, CLASSROOM_TITLE)
+    # 页面本身不可用时，后面的字段读到什么都不作数。
+    if error is not None:
+        return None, error
+    semesters, selected = select_options(raw, SEMESTER_FIELD)
+    # 没有选中学期就定不了目标学期，也推不出本学年。
+    if not selected:
+        return None, failure("jwxt", "父页没有选中的学期", PARENT_HINT)
+    mode = field_value(raw, MODE_FIELD)
+    # 没有节次模式就拼不出课表 POST 的 kbjcmsid，该学期的节次不可用。
+    if not mode:
+        return None, failure("jwxt", "父页没有 kbjcmsid，该学期节次模式不可用", PARENT_HINT)
+    return {"semesters": semesters, "selected": selected, "kbjcmsid": mode}, None
+
+def parse_dictionary(text, max_row):
+    """解析 queryJs2 的 JSON，返回 (字典, 失败结果)。
+
+    字典含 max_row、records 与 warnings，每条记录只收 jsid 与 jsmc。result 不是 true，
+    或 list 长度等于请求的 max_row（说明名单被上限截断）时拒绝该次名单：残缺名单不能当成
+    教室全集。已发布的教室总表只作规模参照，不作运行时输入。
+    """
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None, failure("jwxt", "教室字典响应不是合法 JSON", DICTIONARY_HINT)
+    # 响应不是对象时取不出 result 与 list。
+    if not isinstance(data, dict):
+        return None, failure("jwxt", "教室字典响应的结构不是对象", DICTIONARY_HINT)
+    # result 不是 true 说明这次请求没拿到名单，不能用它当全集。
+    if data.get("result") is not True:
+        return None, failure("jwxt", "教室字典返回的 result 不是 true", DICTIONARY_HINT)
+    raw_list = data.get("list")
+    # list 不是数组时同样取不出记录。
+    if not isinstance(raw_list, list):
+        return None, failure("jwxt", "教室字典返回的 list 不是数组", DICTIONARY_HINT)
+    # 长度等于请求上限说明名单被截断，残缺名单不能当成全集。
+    if len(raw_list) == max_row:
+        message = "教室字典被截断: list 长度 " + str(len(raw_list)) + " 等于 maxRow"
+        return None, failure("jwxt", message, DICTIONARY_HINT)
+    records = []
+    warnings = []
+    for item in raw_list:
+        record = dictionary_record(item, warnings)
+        # 取不出 jsid 或 jsmc 的记录不进字典，警告已在解析那条记录时记下。
+        if record is None:
+            continue
+        records.append(record)
+    dictionary = {"max_row": max_row, "records": records, "warnings": warnings}
+    return dictionary, None
+
+
+def dictionary_record(item, warnings):
+    """把一条字典记录解成 jsid、jsmc 与展开结果；取不出 jsid 或 jsmc 时返回 None。
+
+    只收 jsid 与 jsmc，其他字段一律不进字典。展开不出房号的展示名仍留在字典里并记警告：
+    它不能进不上课结果。
+    """
+    # 不是对象的条目取不出这两个字段。
+    if not isinstance(item, dict):
+        warnings.append("字典记录不是对象，已跳过")
+        return None
+    jsid = str(item.get("jsid") or "").strip()
+    jsmc = str(item.get("jsmc") or "").strip()
+    # 缺 jsid 的记录对不上教室身份，缺 jsmc 的没有展示名，都只能跳过。
+    if not jsid or not jsmc:
+        warnings.append("字典记录缺少 jsid 或 jsmc，已跳过: " + (jsid or jsmc or "(空)"))
+        return None
+    record = expand_record(jsid, jsmc)
+    # 展开失败的展示名不能进不上课结果，原文进警告。
+    if not record["expanded"]:
+        warnings.append("教室名无法展开，不进不上课结果: " + jsmc)
+    return record
+
+
+def cell_text(cell):
+    """取单元格的展示文本：去标签并压缩空白。"""
+    return strip_tags(cell)
+
+
+def header_row_index(rows):
+    """找表头行下标：首格是「教室\\节次」且其后 35 格是节次块名的那一行。
+
+    表头上面还有一行 7 天的星期标题，所以不能假定第 1 行就是表头。找不到返回 None。
+    """
+    for index, row in enumerate(rows):
+        # 格数不符的行不可能是表头，先按格数筛掉。
+        if len(row) != GRID_CELL_COUNT + 1:
+            continue
+        # 第 1 格文本不是表头首格时，这一行不是节次块表头。
+        if cell_text(row[0]) != HEADER_FIRST_CELL:
+            continue
+        # 其后 35 格必须是按天重复的 5 个节次块名，否则星期与块的落位无从确定。
+        if tuple(cell_text(cell) for cell in row[1:]) != GRID_BLOCK_NAMES:
+            continue
+        return index
+    return None
+
+
+def has_class_block(cell_html):
+    """判断一格是否含课程块结构：有 class 带 kbcontent 的 div 即为有课。
+
+    只看结构不读文字：空格的原文是 NOBR 包着的 &nbsp;，而真实课程正文里也会出现
+    &nbsp;，按文本非空判会把空格当有课。
+    """
+    for match in DIV_TAG_RE.finditer(cell_html):
+        # 只有 class 属性里带 kbcontent 的 div 才是课程块，其他 div 不参与判定。
+        if "kbcontent" in attr(match.group(0), "class").lower():
+            return True
+    return False
+
+
+def row_occupancy(cells):
+    """把一行 35 个数据格压成占用位，返回 {星期: {块名: 布尔值}}。
+
+    格数不是 35 时返回 None，调用方按课表结构变化处理。判据是格内有没有课程块结构，
+    单元格文字一律不读。
+    """
+    # 格数不是 7 天 × 5 块时列与块的对应关系断了，不能按缺失的列推断空闲。
+    if len(cells) != GRID_CELL_COUNT:
+        return None
+    occupancy = {}
+    index = 0
+    for weekday in WEEKDAYS:
+        occupancy[weekday] = {}
+        for name, _periods in PERIOD_BLOCKS:
+            # 有课程块结构就是有课，块内小节共用这一格。
+            occupancy[weekday][name] = has_class_block(cells[index])
+            index += 1
+    return occupancy
+
+
+def row_name_warning(name):
+    """首格取不出教室名时的警告文本：空首格与无法展开要分开说明。"""
+    # 首格完全为空时这一行没有教室名。
+    if not name:
+        return "课表行首格取不出教室名，已跳过该行"
+    return "教室名无法展开，不进不上课结果: " + name
+
+
+def classroom_table_rows(raw):
+    """取课表表格的数据行，返回 (数据行, 失败结果)。
+
+    先判登录页、会话互踢与非法访问，再判正文「查询节次出错」，然后定位闭合的
+    `table#kbtable` 并校验表头；表头之后的每一行都是数据行。
+    """
+    error = page_failure(raw)
+    # 页面不可用时不必再找表格。
+    if error is not None:
+        return None, error
+    # 正文写「查询节次出错」说明该学期没配课表节次，与网格结构无关，单独说明。
+    if PERIOD_ERROR_TEXT in raw:
+        return None, failure("jwxt", "该学期查询节次出错，节次模式不可用", PARENT_HINT)
+    match = KBTABLE_RE.search(raw)
+    # 没有闭合的 table#kbtable 就拿不到 35 格，响应不可用。
+    if match is None:
+        return None, failure("jwxt", "响应里没有闭合的 table#kbtable", GRID_HINT)
+    rows = parse_table_html(match.group(0))
+    index = header_row_index(rows)
+    # 表头不符预期说明课表结构变了，星期与块的落位无从确定。
+    if index is None:
+        message = "课表表头不是「" + HEADER_FIRST_CELL + "」或节次块不符预期"
+        return None, failure("jwxt", message, GRID_HINT)
+    return rows[index + 1:], None
+
+
+def parse_classroom_table(raw):
+    """解析教室课表响应，返回 (解析结果, 失败结果)。
+
+    解析结果含 rows（每行的展示名、展开出的单体教室与占用位）与 warnings。登录页、会话
+    互踢、非法访问、正文「查询节次出错」、缺闭合 `table#kbtable`、表头不符、任一数据行
+    格数不是 35、没有一行首格能取出教室名时整份响应不可用：调用方不得写缓存，也不得产生
+    不上课教室。
+    """
+    rows, error = classroom_table_rows(raw)
+    # 页面或表格不可用时整份响应都不作数。
+    if error is not None:
+        return None, error
+    parsed = []
+    warnings = []
+    for row in rows:
+        # 任一数据行格数不是 35 说明课表结构变了，不能用缺失的列推断空闲。
+        if len(row) != GRID_CELL_COUNT + 1:
+            message = "数据行格数不是 " + str(GRID_CELL_COUNT) + ": cells=" + str(len(row))
+            return None, failure("jwxt", message, GRID_HINT)
+        name = cell_text(row[0])
+        expanded = expand_room_name(name)
+        # 首格取不出教室名的行只进警告：既不进占用集，也不产生结果行。
+        if not expanded["expanded"]:
+            warnings.append(row_name_warning(name))
+            continue
+        parsed.append(
+            {
+                "name": expanded["name"],
+                "rooms": expanded["rooms"],
+                "occupancy": row_occupancy(row[1:]),
+            }
+        )
+    # 一行都取不出教室名时整份响应不可用，否则会把「全部教室都不上课」当成结论。
+    if not parsed:
+        return None, failure("jwxt", "课表没有一行首格能取出教室名", GRID_HINT)
+    return {"rows": parsed, "warnings": warnings}, None
+
+
+def room_occupancy_map(parsed):
+    """把逐行占用位摊平成 单体教室 → 占用位；同名教室取先出现的那一行。
+
+    合称行的占用位就是该行那一份，展开出的每间单体教室共用它，不拆成多份。
+    """
+    rooms = {}
+    for row in parsed["rows"]:
+        for name in row["rooms"]:
+            # 同名教室第二次出现时保留先出现的那一份占用位。
+            if name in rooms:
+                continue
+            rooms[name] = row["occupancy"]
+    return rooms
+
+
+def any_occupied(occupancy, weekday, blocks):
+    """判断某天的给定块里是否至少有一个占用格；占用位缺失按没有课处理。
+
+    块内小节共用一格，所以给定块里任一格有课就说明该大节有课。
+    """
+    day = occupancy.get(weekday, {})
+    for name in blocks:
+        # 给定块里有一块被占用就算占用。
+        if day.get(name, False):
+            return True
+    return False
+
+
+def free_blocks_of_day(occupancy, weekday):
+    """取某天没有课的块名，按表头顺序返回。
+
+    占用位为空（例如响应里没有这间教室的行）时 5 个块都空闲。空闲只表示没有排课，不表示
+    可以占用。
+    """
+    day = occupancy.get(weekday, {})
+    free = []
+    for name, _periods in PERIOD_BLOCKS:
+        # 该块在这一天没有占用格时算空闲。
+        if not day.get(name, False):
+            free.append(name)
+    return free

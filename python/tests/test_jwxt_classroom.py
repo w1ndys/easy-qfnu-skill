@@ -1,15 +1,26 @@
+import json
+import random
 import unittest
 
 from qfnu.jwxt_classroom import (
     BLOCK_START_BOUNDS,
+    GRID_BLOCK_NAMES,
+    GRID_CELL_COUNT,
     PERIOD_BLOCKS,
+    any_occupied,
     block_bounds_error,
     expand_record,
     expand_room_name,
+    free_blocks_of_day,
     normalize_room_name,
     parse_academic_year,
+    parse_classroom_page,
+    parse_classroom_table,
+    parse_dictionary,
     parse_semester,
     query_blocks,
+    room_occupancy_map,
+    row_occupancy,
     validate_query,
     year_semester_list,
 )
@@ -401,6 +412,553 @@ class ClassroomRoomExpansionTest(unittest.TestCase):
         self.assertFalse(record["expanded"])
         self.assertEqual(record["jsmc"], "演播厅")
         self.assertEqual(record["source_jsid"], "JSID-1")
+
+
+
+# 父页成功标题，样本里的标题必须与它一致。
+PARENT_TITLE = "全校性教室课表"
+
+# 父页样本里的节次模式 ID：故意不用文档里的样本值，用来断言解析不写死样本 ID。
+PARENT_MODE_ID = "3F1C9A5E7B20468D"
+
+# 字典请求的 maxRow，截断判据按它比较。
+DICTIONARY_MAX_ROW = 5000
+
+# 表头第 1 格原文，与设计里的「教室\节次」一致。
+HEADER_FIRST_CELL_TEXT = "教室\\节次"
+
+# 空格格的原文：判空不能靠文字，只能靠格内有没有课程块结构。
+EMPTY_CELL = "<nobr> &nbsp; </nobr>"
+
+# 属性测试用的教室名池，都带房号，保证能展开出单体教室。
+ROOM_NAME_POOL = ("格物楼B101", "数学楼401", "数学楼401、403", "实验中心B区B104、B106", "F101-102")
+
+# 属性测试用的楼栋前缀池，用来随机拼合称展示名。
+BUILDING_POOL = ("数学楼", "格物楼", "实验中心B区")
+
+
+def course_cell(text):
+    """课程格：含 kbcontent 结构即为有课，格内文字不参与判定。"""
+    return '<nobr><div id=\'\' class="kbcontent1">' + text + "</div></nobr>"
+
+
+def grid_cells(occupied, text="课程"):
+    """生成 35 个数据格：occupied 里的下标放课程格，其余放原文空格。"""
+    cells = []
+    for index in range(GRID_CELL_COUNT):
+        # 有课与没课只差一个课程块结构，其余一律是空格原文。
+        if index in occupied:
+            cells.append("<td>" + course_cell(text + str(index)) + "</td>")
+        else:
+            cells.append("<td>" + EMPTY_CELL + "</td>")
+    return cells
+
+
+def data_row(name, occupied, text="课程"):
+    """一行数据行：首格是教室展示名，其后是 35 个数据格。"""
+    return name, grid_cells(occupied, text)
+
+
+def classroom_table(rows, header_first=HEADER_FIRST_CELL_TEXT, block_names=None):
+    """拼一份课表响应：星期标题行 + 节次表头行 + 逐行数据。"""
+    names = GRID_BLOCK_NAMES if block_names is None else block_names
+    day_row = "<tr><th>&nbsp;</th>" + "<th colspan='5'>星期</th>" * 7 + "</tr>"
+    header_cells = "".join("<td>" + name + "</td>" for name in names)
+    lines = ['<table id="kbtable" border="1">', day_row, "<tr><td>" + header_first + "</td>" + header_cells + "</tr>"]
+    for name, cells in rows:
+        lines.append("<tr><td>" + name + "</td>" + "".join(cells) + "</tr>")
+    lines.append("</table>")
+    return "<html><body>" + "\n".join(lines) + "</body></html>"
+
+
+def parent_page(title=PARENT_TITLE, body="", values=None, mode=PARENT_MODE_ID):
+    """拼一份父页样本：标题 + 学期下拉 + 节次模式隐藏字段。"""
+    semester_values = SEMESTER_OPTIONS if values is None else values
+    options = []
+    for value in semester_values:
+        attributes = ""
+        # 当前学期带 selected，其余项都不带。
+        if value == SELECTED_SEMESTER:
+            attributes = ' selected="selected"'
+        options.append('<option value="' + value + '"' + attributes + ">" + value + "</option>")
+    mode_html = ""
+    # mode 传 None 表示这份样本故意不带节次模式字段。
+    if mode is not None:
+        mode_html = '<input type="hidden" name="kbjcmsid" value="' + mode + '">'
+    page = (
+        "<html><head><title>" + title + "</title></head><body>" + body
+        + '<select name="xnxqh">' + "".join(options) + "</select>" + mode_html
+        + "</body></html>"
+    )
+    return page
+
+
+def occupied_positions(occupancy):
+    """取占用位里所有为真的位置，返回 (星期, 块名) 列表。"""
+    positions = []
+    for weekday in sorted(occupancy):
+        for name, _periods in PERIOD_BLOCKS:
+            # 只有有课的块才进列表。
+            if occupancy[weekday][name]:
+                positions.append((weekday, name))
+    return positions
+
+
+def expected_occupancy(occupied):
+    """按占用下标算出应有的占用位，供属性测试断言解析没有盖住结构差异。"""
+    occupancy = {}
+    for weekday in range(1, 8):
+        occupancy[weekday] = {}
+        for block_index, (name, _periods) in enumerate(PERIOD_BLOCKS):
+            # 35 格按天重复 5 个块，下标就是「星期 × 块」的序号。
+            occupancy[weekday][name] = ((weekday - 1) * len(PERIOD_BLOCKS) + block_index) in occupied
+    return occupancy
+
+
+class ClassroomParentPageTest(unittest.TestCase):
+    """任务 5.1：父页解析覆盖选中学期、kbjcmsid、登录页、缺字段与非法访问。"""
+
+    def assert_rejected(self, error, text):
+        """断言失败结果 ok 为 false、错误里点出原因、且不含 rooms。"""
+        self.assertIsNotNone(error)
+        self.assertFalse(error["ok"])
+        self.assertIn(text, error["error"])
+        self.assertTrue(error["hint"])
+        self.assertNotIn("rooms", error)
+
+    def test_parent_page_reads_semesters_and_selected_one(self):
+        """学期下拉的全部 value 与当前选中项都要读出来。"""
+        info, error = parse_classroom_page(parent_page())
+        self.assertIsNone(error)
+        self.assertEqual(info["semesters"], list(SEMESTER_OPTIONS))
+        self.assertEqual(info["selected"], SELECTED_SEMESTER)
+
+    def test_parent_page_reads_the_mode_from_the_page(self):
+        """节次模式取页面上的值，换一个 ID 也必须原样读出。"""
+        info, error = parse_classroom_page(parent_page(mode=PARENT_MODE_ID))
+        self.assertIsNone(error)
+        self.assertEqual(info["kbjcmsid"], PARENT_MODE_ID)
+        other, other_error = parse_classroom_page(parent_page(mode="AABBCCDDEEFF0011"))
+        self.assertIsNone(other_error)
+        self.assertEqual(other["kbjcmsid"], "AABBCCDDEEFF0011")
+
+    def test_parent_page_without_semester_options_is_rejected(self):
+        """学期下拉一个 option 都没有时定不了目标学期，直接拒绝。"""
+        info, error = parse_classroom_page(parent_page(values=()))
+        self.assertIsNone(info)
+        self.assert_rejected(error, "学期")
+
+    def test_first_semester_option_is_selected_without_marker(self):
+        """一个 option 都没写 selected 时按浏览器口径取第一项。"""
+        page = parent_page(values=("2027-2028-1", "2025-2026-2"))
+        info, error = parse_classroom_page(page)
+        self.assertIsNone(error)
+        self.assertEqual(info["semesters"], ["2027-2028-1", "2025-2026-2"])
+        self.assertEqual(info["selected"], "2027-2028-1")
+
+    def test_mode_written_as_select_without_marker_is_read(self):
+        """真实父页的节次模式是只有一个 option 的下拉，且不带 selected。"""
+        page = (
+            "<html><head><title>" + PARENT_TITLE + "</title></head><body>"
+            '<select name="xnxqh"><option value="2026-2027-1" selected="selected">2026-2027-1</option></select>'
+            '<select name="kbjcmsid"><option value="' + PARENT_MODE_ID + '">默认节次模式</option></select>'
+            "</body></html>"
+        )
+        info, error = parse_classroom_page(page)
+        self.assertIsNone(error)
+        self.assertEqual(info["kbjcmsid"], PARENT_MODE_ID)
+
+    def test_parent_page_without_mode_is_rejected(self):
+        """缺 kbjcmsid 时说明该学期节次模式不可用。"""
+        info, error = parse_classroom_page(parent_page(mode=None))
+        self.assertIsNone(info)
+        self.assert_rejected(error, "kbjcmsid")
+
+    def test_login_page_is_rejected(self):
+        """标题写着登录页时停止查询并要求重新登录。"""
+        info, error = parse_classroom_page(parent_page(title="统一身份认证登录"))
+        self.assertIsNone(info)
+        self.assert_rejected(error, "登录")
+
+    def test_login_form_markers_are_rejected_too(self):
+        """正文出现登录表单标记时同样按登录页处理。"""
+        page = parent_page(body="请输入账号 请输入密码 请输入验证码")
+        info, error = parse_classroom_page(page)
+        self.assertIsNone(info)
+        self.assert_rejected(error, "登录")
+
+    def test_illegal_access_page_is_rejected(self):
+        """正文是非法访问时页面未被识别，通常是接口路径误写。"""
+        page = "<html><head><title>提示</title></head><body>提示：非法访问！</body></html>"
+        info, error = parse_classroom_page(page)
+        self.assertIsNone(info)
+        self.assert_rejected(error, "非法访问")
+
+    def test_other_page_title_is_rejected(self):
+        """标题既不是教室课表也不是登录页时停止查询。"""
+        info, error = parse_classroom_page(parent_page(title="学生个人课表"))
+        self.assertIsNone(info)
+        self.assert_rejected(error, PARENT_TITLE)
+
+    def test_session_kick_page_is_rejected(self):
+        """正文是会话互踢提示时与参数无关，只能重新登录。"""
+        info, error = parse_classroom_page(parent_page(body="您的账号在其它地方登录"))
+        self.assertIsNone(info)
+        self.assert_rejected(error, "互踢")
+
+
+class ClassroomDictionaryTest(unittest.TestCase):
+    """任务 5.2：字典只收 jsid 与 jsmc，截断与残缺名单不得当全集。"""
+
+    def records(self, raw_list, max_row=DICTIONARY_MAX_ROW):
+        """解析一份字典 JSON 并断言成功，返回字典。"""
+        text = json.dumps({"result": True, "list": raw_list})
+        dictionary, error = parse_dictionary(text, max_row)
+        self.assertIsNone(error)
+        return dictionary
+
+    def assert_rejected(self, error, text):
+        """断言这次字典被拒绝，错误里点出原因且不含 rooms。"""
+        self.assertIsNotNone(error)
+        self.assertFalse(error["ok"])
+        self.assertIn(text, error["error"])
+        self.assertNotIn("rooms", error)
+
+    def test_dictionary_keeps_only_jsid_and_jsmc(self):
+        """记录只留 jsid 与 jsmc，其他响应字段不进字典。"""
+        items = [{"jsid": "JSID-1", "jsmc": "格物楼B101", "jsbh": "不该出现", "jszt": "1"}]
+        dictionary = self.records(items)
+        self.assertEqual(dictionary["max_row"], DICTIONARY_MAX_ROW)
+        record = dictionary["records"][0]
+        self.assertEqual(record["jsid"], "JSID-1")
+        self.assertEqual(record["jsmc"], "格物楼B101")
+        self.assertEqual(record["rooms"], ["格物楼B101"])
+        self.assertEqual(sorted(record), ["expanded", "jsid", "jsmc", "rooms", "source_jsid"])
+
+    def test_dictionary_list_equal_to_max_row_is_rejected(self):
+        """list 长度等于 maxRow 说明名单被截断，不能当全集。"""
+        items = []
+        for index in range(3):
+            items.append({"jsid": "JSID-" + str(index), "jsmc": "格物楼B10" + str(index)})
+        text = json.dumps({"result": True, "list": items})
+        dictionary, error = parse_dictionary(text, 3)
+        self.assertIsNone(dictionary)
+        self.assert_rejected(error, "maxRow")
+
+    def test_dictionary_result_not_true_is_rejected(self):
+        """result 不是 true 时这次请求没有拿到名单。"""
+        text = json.dumps({"result": False, "list": []})
+        dictionary, error = parse_dictionary(text, DICTIONARY_MAX_ROW)
+        self.assertIsNone(dictionary)
+        self.assert_rejected(error, "result")
+
+    def test_dictionary_invalid_json_is_rejected(self):
+        """响应不是 JSON（例如拿回登录页）时不能当名单。"""
+        dictionary, error = parse_dictionary("<html>请输入账号</html>", DICTIONARY_MAX_ROW)
+        self.assertIsNone(dictionary)
+        self.assert_rejected(error, "JSON")
+
+    def test_dictionary_record_without_jsid_is_skipped(self):
+        """缺 jsid 或 jsmc 的记录跳过并记警告。"""
+        items = [{"jsmc": "格物楼B101"}, {"jsid": "JSID-2", "jsmc": "数学楼401"}]
+        dictionary = self.records(items)
+        self.assertEqual(len(dictionary["records"]), 1)
+        self.assertEqual(dictionary["records"][0]["jsid"], "JSID-2")
+        self.assertTrue(dictionary["warnings"])
+
+    def test_dictionary_unexpandable_name_stays_with_warning(self):
+        """展开不出房号的展示名仍留在字典里，但要记警告。"""
+        dictionary = self.records([{"jsid": "JSID-3", "jsmc": "演播厅"}])
+        self.assertEqual(dictionary["records"][0]["rooms"], [])
+        self.assertIn("演播厅", " ".join(dictionary["warnings"]))
+
+    def test_dictionary_composite_record_keeps_one_source_jsid(self):
+        """合称记录只记一个 source_jsid，不按展开出的教室拆成多条。"""
+        dictionary = self.records([{"jsid": "DB3511C3DF574E3A", "jsmc": "数学楼401、403"}])
+        self.assertEqual(len(dictionary["records"]), 1)
+        record = dictionary["records"][0]
+        self.assertEqual(record["rooms"], ["数学楼401", "数学楼403"])
+        self.assertEqual(record["source_jsid"], "DB3511C3DF574E3A")
+        self.assertEqual(record["jsid"], record["source_jsid"])
+
+
+class ClassroomGridTest(unittest.TestCase):
+    """任务 5.3：占用位与网格守卫。"""
+
+    def parse_first_row(self, rows, **kwargs):
+        """解析一份课表并返回第一行，顺带断言整份响应可用。"""
+        parsed, error = parse_classroom_table(classroom_table(rows, **kwargs))
+        self.assertIsNone(error)
+        return parsed["rows"][0]
+
+    def test_one_room_name_per_data_row(self):
+        """一行一个教室名，展开后仍是单体教室。"""
+        row = self.parse_first_row([data_row("格物楼B101", set())])
+        self.assertEqual(row["name"], "格物楼B101")
+        self.assertEqual(row["rooms"], ["格物楼B101"])
+
+    def test_cell_with_kbcontent_counts_as_occupied(self):
+        """含 kbcontent 结构的格算有课，落位按「星期 × 块」。"""
+        row = self.parse_first_row([data_row("格物楼B101", {0, 11})])
+        self.assertEqual(occupied_positions(row["occupancy"]), [(1, "0102"), (3, "030405")])
+
+    def test_nobr_nbsp_cell_is_not_occupied(self):
+        """`<nobr> &nbsp; </nobr>` 不算有课，整行 5 块都空闲。"""
+        row = self.parse_first_row([data_row("格物楼B101", set())])
+        self.assertEqual(occupied_positions(row["occupancy"]), [])
+        self.assertEqual(free_blocks_of_day(row["occupancy"], 1), list(GRID_BLOCK_NAMES[:5]))
+
+    def test_occupancy_lands_on_the_weekday_and_block_of_each_cell(self):
+        """35 格按 5 个块逐天重复，第 3 天第 2 块因此落在第 12 格（下标 11）。"""
+        for index in range(GRID_CELL_COUNT):
+            row = self.parse_first_row([data_row("格物楼B101", {index})])
+            weekday = index // len(PERIOD_BLOCKS) + 1
+            self.assertEqual(occupied_positions(row["occupancy"]), [(weekday, GRID_BLOCK_NAMES[index])])
+        row = self.parse_first_row([data_row("格物楼B101", {11})])
+        self.assertTrue(row["occupancy"][3]["030405"])
+        self.assertFalse(row["occupancy"][3]["0102"])
+
+    def test_selected_block_empty_still_not_occupied(self):
+        """同行别的块有内容、但所选大节为空时，该行仍不算占用。"""
+        # 第 3 天第 3 块（0607）有课，下标是 2 天 × 5 块 + 2。
+        row = self.parse_first_row([data_row("格物楼B101", {12})])
+        self.assertTrue(row["occupancy"][3]["0607"])
+        self.assertFalse(any_occupied(row["occupancy"], 3, ["0102"]))
+        self.assertEqual(free_blocks_of_day(row["occupancy"], 3), ["0102", "030405", "0809", "101112"])
+
+    def test_row_absent_from_response_has_every_block_free(self):
+        """占用位为空表示响应里没有这行的教室，5 个块都空闲。"""
+        self.assertEqual(free_blocks_of_day({}, 3), list(GRID_BLOCK_NAMES[:5]))
+
+    def test_row_occupancy_guard_requires_35_cells(self):
+        """占用位只接受 35 格：格数不符时没有可读的星期与块落位。"""
+        self.assertIsNone(row_occupancy(grid_cells({0})[:-1]))
+        self.assertEqual(len(row_occupancy(grid_cells(set()))), 7)
+
+    def test_data_row_cell_count_other_than_35_is_unusable(self):
+        """格数不是 35 说明课表结构变了，整份响应不可用。"""
+        short = grid_cells({0})[:-1]
+        long = grid_cells({0}) + ["<td>" + EMPTY_CELL + "</td>"]
+        for cells in (short, long):
+            parsed, error = parse_classroom_table(classroom_table([("格物楼B101", cells)]))
+            self.assertIsNone(parsed)
+            self.assertIn("35", error["error"])
+            self.assertNotIn("rooms", error)
+
+    def test_header_mismatch_is_unusable(self):
+        """表头第 1 格或节次块名不符预期时整份响应不可用。"""
+        rows = [data_row("格物楼B101", {0})]
+        for kwargs in ({"header_first": "教室/节次"}, {"block_names": GRID_BLOCK_NAMES[:-1]}):
+            parsed, error = parse_classroom_table(classroom_table(rows, **kwargs))
+            self.assertIsNone(parsed)
+            self.assertIn("表头", error["error"])
+            self.assertNotIn("rooms", error)
+
+    def test_first_cell_without_room_name_only_warns(self):
+        """首格取不出教室名的行只进警告，不进占用集也不产生结果行。"""
+        rows = [data_row("演播厅", {0}), data_row("", {0}), data_row("格物楼B101", {0})]
+        parsed, error = parse_classroom_table(classroom_table(rows))
+        self.assertIsNone(error)
+        self.assertEqual(len(parsed["rows"]), 1)
+        self.assertEqual(parsed["rows"][0]["name"], "格物楼B101")
+        self.assertEqual(room_occupancy_map(parsed).keys(), {"格物楼B101"})
+        self.assertEqual(len(parsed["warnings"]), 2)
+        self.assertIn("演播厅", " ".join(parsed["warnings"]))
+
+    def test_no_row_with_a_room_name_is_unusable(self):
+        """一行都取不出教室名时整份响应不可用，不能当成「都不上课」。"""
+        parsed, error = parse_classroom_table(classroom_table([data_row("演播厅", {0})]))
+        self.assertIsNone(parsed)
+        self.assertIn("教室名", error["error"])
+        self.assertNotIn("rooms", error)
+
+
+class ClassroomContentIndependenceTest(unittest.TestCase):
+    """任务 5.4 / 设计 Correctness Properties 第 4 条 / 需求 5.4：判定只依赖首格与课程块结构。"""
+
+    # 固定种子让属性测试可复现。
+    SEED = 20261008
+
+    # 轮数，覆盖多种占用组合。
+    ROUNDS = 20
+
+    # 两份副本用的格内文字：完全不同，判定不该读出区别。
+    WORDS_A = ("语文甲", "数学乙", "体育丙", "自习")
+    WORDS_B = ("Engineering", "第二班", "旁听", "占位")
+
+    def random_structures(self, generator):
+        """生成随机的教室名与占用下标，两份副本共用这份结构。"""
+        structures = []
+        for _index in range(generator.randint(1, 4)):
+            occupied = set()
+            for cell in range(GRID_CELL_COUNT):
+                # 每格随机决定有没有课，占用结构就是这条属性要保住的东西。
+                if generator.random() < 0.2:
+                    occupied.add(cell)
+            structures.append((generator.choice(ROOM_NAME_POOL), occupied))
+        return structures
+
+    def rendered_table(self, structures, words):
+        """按占用结构渲染课表：有课的格放课程块结构，其余格只放文字。"""
+        rows = []
+        for row_index, (name, occupied) in enumerate(structures):
+            cells = []
+            for index in range(GRID_CELL_COUNT):
+                text = words[(row_index + index) % len(words)]
+                # 两份副本只有格内文字不同，课程块结构完全一致。
+                if index in occupied:
+                    cells.append("<td>" + course_cell(text) + "</td>")
+                else:
+                    cells.append("<td><nobr> " + text + " </nobr></td>")
+            rows.append((name, cells))
+        return classroom_table(rows)
+
+    def test_replacing_cell_text_keeps_the_parse_identical(self):
+        """格内文字全换掉后，占用集与派生的空闲块完全一致。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            structures = self.random_structures(generator)
+            first, first_error = parse_classroom_table(self.rendered_table(structures, self.WORDS_A))
+            second, second_error = parse_classroom_table(self.rendered_table(structures, self.WORDS_B))
+            self.assertIsNone(first_error)
+            self.assertIsNone(second_error)
+            self.assertEqual(first, second)
+            # 文字无关不等于判空失灵：占用位必须与生成的结构逐格吻合。
+            for row, (_name, occupied) in zip(first["rows"], structures):
+                expected = expected_occupancy(occupied)
+                self.assertEqual(row["occupancy"], expected)
+                self.assertEqual(free_blocks_of_day(row["occupancy"], 3), free_blocks_of_day(expected, 3))
+
+    def test_clearing_cell_structure_removes_the_occupancy(self):
+        """把某行的格清成不含结构后，该行不再算占用，其他行不受影响。"""
+        generator = random.Random(self.SEED)
+        structures = self.random_structures(generator)
+        structures[0] = (structures[0][0], {0, 11})
+        parsed, error = parse_classroom_table(self.rendered_table(structures, self.WORDS_A))
+        self.assertIsNone(error)
+        self.assertEqual(occupied_positions(parsed["rows"][0]["occupancy"]), [(1, "0102"), (3, "030405")])
+        cleared = [(structures[0][0], set())] + structures[1:]
+        after, after_error = parse_classroom_table(self.rendered_table(cleared, self.WORDS_A))
+        self.assertIsNone(after_error)
+        self.assertEqual(occupied_positions(after["rows"][0]["occupancy"]), [])
+        self.assertEqual(free_blocks_of_day(after["rows"][0]["occupancy"], 1), list(GRID_BLOCK_NAMES[:5]))
+        self.assertEqual(after["rows"][1:], parsed["rows"][1:])
+
+
+class ClassroomCompositeSharingTest(unittest.TestCase):
+    """任务 5.5 / 设计 Correctness Properties 第 11 条 / 需求 7.3：合称行对每间单体教室一致。"""
+
+    # 固定种子让属性测试可复现。
+    SEED = 20261009
+
+    # 轮数，覆盖多种合称写法与占用组合。
+    ROUNDS = 20
+
+    def random_composite(self, generator):
+        """随机拼一个合称展示名，并算出它应展开出的单体教室。"""
+        building = generator.choice(BUILDING_POOL)
+        first = generator.randint(1, 9) * 100 + generator.randint(1, 30)
+        second = first + generator.randint(1, 30)
+        separator = generator.choice(("、", "."))
+        name = building + str(first) + separator + str(second)
+        return name, [building + str(first), building + str(second)]
+
+    def random_occupied(self, generator):
+        """随机取一组占用下标。"""
+        occupied = set()
+        for cell in range(GRID_CELL_COUNT):
+            # 每格随机决定有没有课。
+            if generator.random() < 0.25:
+                occupied.add(cell)
+        return occupied
+
+    def test_composite_row_shares_one_occupancy_with_every_room(self):
+        """合称行展开出的每间单体教室拿到同一份占用位，派生的空闲块也一致。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            name, rooms = self.random_composite(generator)
+            occupied = self.random_occupied(generator)
+            parsed, error = parse_classroom_table(classroom_table([data_row(name, occupied)]))
+            self.assertIsNone(error)
+            row = parsed["rows"][0]
+            self.assertEqual(row["name"], name)
+            self.assertEqual(row["rooms"], rooms)
+            lookup = room_occupancy_map(parsed)
+            for room in rooms:
+                # 同一份派生数据：必须是同一个对象，不是逐间各算一遍。
+                self.assertIs(lookup[room], row["occupancy"])
+            for weekday in range(1, 8):
+                first_free = free_blocks_of_day(lookup[rooms[0]], weekday)
+                self.assertEqual(first_free, free_blocks_of_day(row["occupancy"], weekday))
+                self.assertEqual(free_blocks_of_day(lookup[rooms[1]], weekday), first_free)
+
+    def test_dictionary_composite_record_keeps_one_source_jsid(self):
+        """合称字典记录只留一个 source_jsid，不按展开出的教室拆成多条记录。"""
+        generator = random.Random(self.SEED)
+        items = []
+        expected_rooms = []
+        for index in range(self.ROUNDS):
+            name, rooms = self.random_composite(generator)
+            items.append({"jsid": "JSID-" + str(index), "jsmc": name})
+            expected_rooms.append(rooms)
+        text = json.dumps({"result": True, "list": items})
+        dictionary, error = parse_dictionary(text, DICTIONARY_MAX_ROW)
+        self.assertIsNone(error)
+        self.assertEqual(len(dictionary["records"]), len(items))
+        for item, rooms, record in zip(items, expected_rooms, dictionary["records"]):
+            self.assertEqual(record["rooms"], rooms)
+            self.assertEqual(record["jsid"], item["jsid"])
+            self.assertEqual(record["source_jsid"], item["jsid"])
+
+
+class ClassroomFailurePageTest(unittest.TestCase):
+    """任务 5.6 / 需求 8.3、8.4 / 设计 Correctness Properties 第 14 条：失败页不产生教室行。"""
+
+    def assert_unusable(self, raw, text):
+        """断言整份响应不可用：失败结果点出原因，且不产生任何教室行。"""
+        parsed, error = parse_classroom_table(raw)
+        self.assertIsNone(parsed)
+        self.assertIsNotNone(error)
+        self.assertFalse(error["ok"])
+        self.assertIn(text, error["error"])
+        self.assertNotIn("rooms", error)
+
+    def test_login_page_is_unusable(self):
+        """登录页说明会话已失效，必须重新登录。"""
+        page = "<html><head><title>登录</title></head><body>请输入账号 请输入密码</body></html>"
+        self.assert_unusable(page, "登录")
+
+    def test_illegal_access_page_is_unusable(self):
+        """非法访问页说明接口路径误写，页面未被识别。"""
+        self.assert_unusable("<html><body>提示：非法访问！</body></html>", "非法访问")
+
+    def test_session_kick_page_is_unusable(self):
+        """会话互踢提示与参数无关，不与课表结构问题混在一起。"""
+        self.assert_unusable("<html><body>您的账号在其它地方登录</body></html>", "互踢")
+
+    def test_page_without_kbtable_is_unusable(self):
+        """缺 table#kbtable 时拿不到 35 格。"""
+        page = "<html><head><title>" + PARENT_TITLE + "</title></head><body><table id='other'></table></body></html>"
+        self.assert_unusable(page, "kbtable")
+
+    def test_table_without_closing_tag_is_unusable(self):
+        """表格缺闭合标签时不完整，同样不可用。"""
+        page = '<table id="kbtable"><tr><td>' + HEADER_FIRST_CELL_TEXT + "</td></tr>"
+        self.assert_unusable(page, "kbtable")
+
+    def test_cell_count_other_than_35_is_unusable(self):
+        """格数不是 35 说明课表结构变了，不能按缺失的列推断空闲。"""
+        rows = [("格物楼B101", grid_cells({0})[:-1])]
+        self.assert_unusable(classroom_table(rows), "35")
+
+    def test_period_error_page_is_unusable(self):
+        """正文写「查询节次出错」时该学期的节次模式不可用。"""
+        page = "<html><body>查询节次出错，请确认是否设置了该学期课表节次！</body></html>"
+        self.assert_unusable(page, "节次")
+
+    def test_page_without_any_room_name_is_unusable(self):
+        """没有一行首格能取出教室名时不可用，不能当成「都不上课」。"""
+        self.assert_unusable(classroom_table([data_row("演播厅", {0})]), "教室名")
 
 
 if __name__ == "__main__":
