@@ -278,12 +278,25 @@ def confirm_tag_at_head(repo, tag):
 
 
 def porcelain_paths(repo):
-    text = command_text(["git", "status", "--porcelain"], cwd=repo)
+    # 这里不能用 command_text：它会把整段输出 strip 掉，而 porcelain 每行以状态位开头
+    # （未暂存修改是「 M 路径」），前导空格一去 line[3:] 就会把路径名切掉第一个字符。
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ReleaseError("无法读取仓库状态: " + (result.stderr or result.stdout).strip())
     paths = []
-    for line in text.splitlines():
+    for line in result.stdout.splitlines():
+        # 空行不是状态行，跳过。
         if not line.strip():
             continue
+        # porcelain 的一行是「两位状态 + 一个空格 + 路径」，从第 4 个字符起才是路径。
         body = line[3:]
+        # 重命名行写作「旧 -> 新」，只关心最终路径。
         if " -> " in body:
             body = body.split(" -> ", 1)[1]
         paths.append(body)
