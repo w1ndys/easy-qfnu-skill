@@ -51,17 +51,17 @@
   - [x] 5.6 为失败页识别编写单元测试
     - 登录页、非法访问、会话互踢、缺 `kbtable`、格数不是 35、`查询节次出错` 都标为不可用，不产出教室行。对应需求 8.3、8.4。
 
-- [ ] 6. 实现字典与学期教室名缓存
+- [x] 6. 实现字典与学期教室名缓存
   - 在 `python/qfnu/jwxt_classroom.py` 实现缓存目录：默认 `~/.local/state/easy-qfnu-skill/classroom-schedule/`，可复用 `jwxt_client.state_dir()`；环境变量 `QFNU_CLASSROOM_CACHE_PATH` 改目录而不是改文件名。字典文件为 `dictionary.json`，学期文件为 `<学期>.json`。对应需求 2.7，设计「缓存」。
   - 字典缓存字段按设计 Data Models：`fetched_at`、`max_row`、`record_count`、`room_count`、`records[].jsid/jsmc/rooms`。学期缓存只存教室名：`semester`、`kbjcmsid`、`fetched_at`、`complete`、`source_row_count`、`room_count`、`rooms`。`fetched_at` 使用 `+08:00`。不保存 Cookie、`encoded`、账号或密码，也不保存任何单元格内容。对应需求 2.7、6.6。
   - 只把通过完整性校验的正文解析结果写入缓存；残缺 HTML、登录页、会话互踢、格数不是 35 不写。本学年学期与字典的 7 日过期判断做成纯函数，供编排调用。对应需求 2.3、2.4、2.6，设计「缓存」。
   - 约束同任务 1。不把 ai-kit 总表路径写进读取逻辑。
-  - [ ] 6.1 为缓存往返编写单元测试
+  - [x] 6.1 为缓存往返编写单元测试
     - 写入后再读，`jsid` 与教室名一致，且文件没有 Cookie 字段、没有任何单元格内容。使用临时目录，不读真实 `~/.local/state`。对应需求 6.6。
-  - [ ] 6.2 编写属性测试：属性 13，缓存往返保持字段不变
+  - [x] 6.2 编写属性测试：属性 13，缓存往返保持字段不变
     - 用标准库固定种子生成字典记录与学期教室名列表，断言往返后 `jsid` 与教室名完全一致。标注设计 Correctness Properties 第 13 条，需求 2.7、6.6。
 
-- [ ] 7. 检查点 - 确保所有测试通过
+- [x] 7. 检查点 - 确保所有测试通过
   - 确保所有测试通过,如有疑问请询问用户
 
 - [ ] 8. 实现只读请求构造与串行刷新
@@ -123,7 +123,7 @@
   - 字典超过 7 日或缺失则刷新。刷新失败时，7 日内旧字典可继续，并设 `cache.stale_dictionary` 为 true；没有可用字典则停止反推。`list` 长度等于 `maxRow` 或 `result` 不是 true 时，不使用该次响应，按同样的旧缓存规则处理。对应需求 2.1、2.2，设计「缓存」。
   - 只刷新本学年学期，不抓其他学年。目标学期不在本学年列表或不在父页下拉中时停止，说明无法使用该学期。本学年学期早于 7 日则刷新；刷新失败但有未过期缓存时继续，并把学期写入 `cache.stale_semesters`；过期缓存不算可用；没有可用缓存则停止，说明全年无课名单不完整。对应需求 2.3、2.4、8.5、8.6，设计「缓存」与 Error Handling。
   - 会话中途变成登录页或会话互踢提示时停止后续 POST，保留已经校验通过的缓存，要求重新登录，不把这类页面写入缓存。父页没有选中学期或没有 `kbjcmsid`、目标响应节次出错、缺表、格数不是 35、目标学期低于完整阈值、当前学年缺少完整秋或春，都停止反推并使用设计 Error Handling 中对应说明。成功时 `cache.semesters`、`refreshed_semesters`、`stale_semesters`、`stale_dictionary` 按设计 Data Models 填充。对应需求 1.3、4.4、8.1、8.2、8.3、8.4。
-  - 约束同任务 1。编排拆成读父页、刷新字典、刷新一个学期、组装失败等短函数。失败通过现有 `JWXTError` 或 `result.failure` 表达，成功走 `result.success("jwxt", fields)`，从而带上现有信封的 `source`；不要另造一套 JSON 写法。对应设计 Data Models。
+  - 约束同任务 1。编排拆成读父页、刷新字典、刷新一个学期、组装失败等短函数。失败通过现有 `JWXTError` 或 `result.failure` 表达，成功走 `result.success("jwxt", fields)`，从而带上现有信封的 `source`；不要另造一套 JSON 写法。复用任务 5 的解析函数与任务 6 的缓存入口：`write_semester_cache_from_page` 一步完成「解析并仅在通过完整性校验时写盘」，`cache_expired` 判 7 日过期，`semester_complete` 判完整学期阈值。对应设计 Data Models。
   - [ ] 11.1 为编排失败与过期缓存编写单元测试
     - 用假客户端和临时缓存覆盖：某学期刷新失败但有未过期缓存时继续并进入 `stale_semesters`；没有可用缓存则停止；字典截断时 7 日内旧字典可继续；会话中途失效或互踢时停止后续 POST 且不删除已校验缓存；目标学期不在本学年列表时不发额外请求。对应需求 2.2、2.6、8.1、8.5、8.6。
   - [ ] 11.2 编写属性测试：属性 14，失败页不产生不上课教室
