@@ -46,6 +46,8 @@ Credential precedence is command-line arguments, environment variables, then sav
 
 `jwxt status` never trusts the local session file: it loads the cookies, calls `xsMain.jsp`, and treats a non-200 response, `请输入账号` / `请输入密码` / `请输入验证码` in the body, or a missing success marker as expired. No session (`session_expired: false`), an expired session (`session_expired: true`), and a failed check (`session_expired: null`) all return `ok: false` with `logged_in: false` plus a `hint`; only a healthy session returns `ok: true` with `logged_in: true`. A caller that reads only `ok` can no longer mistake a dead session for a live one.
 
+A healthy `jwxt status` also reports the current teaching week as `week: {"current": 3, "total": 16}` when the personal-center page carries it (`current` is the current week, `total` the number of weeks in the semester). When the week cannot be read, `week` is omitted and every other field, including `ok: true`, stays as before.
+
 ## CLI
 
 ```bash
@@ -54,6 +56,7 @@ easy-qfnu jwxt login --username <student-id> --password <password> --captcha <ca
 easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
+easy-qfnu jwxt classrooms --semester 2025-2026-3 --week 3 --weekday 3 --period-start 1  # --week optional
 easy-qfnu jwxt program
 easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
@@ -68,6 +71,8 @@ easy-qfnu jwxt xk search --course "音乐鉴赏"  # live catalog; probes every m
 ```
 
 JSON always includes `ok` and `source: "jwxt"`. Failures contain `ok: false`, `error`, and optionally `hint`.
+
+`jwxt classrooms` looks up rooms with no class in a chosen period. `--week` may be omitted: the CLI then uses the current teaching week. When the current week cannot be determined the command fails and asks for an explicit `--week` instead of querying classrooms.
 
 `jwxt xk rounds` lists open selection rounds. `jwxt xk search` is the live catalog: it enters the round, scans selection modules (default: all five), and returns remaining seats, teachers, times, and `located_modules` (which module actually contains the course). Tell the user this is 即时查询, more accurate than the 夫子校园 cached catalog, and that the official webpage may hide modules by grade while this query does not. If several rounds are open, pass `--round`. Probe rounds first and search immediately when a round is open. If none are open, or live search fails / finds no matching course, stop and ask whether to query the 夫子校园 cached catalog (`precourse search`; 后台定时缓存，有一定延迟). Never auto-run that fallback. Never reconstruct a select/submit request.
 

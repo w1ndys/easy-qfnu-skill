@@ -97,19 +97,20 @@ easy-qfnu jwxt login --save-credentials yes
 easy-qfnu jwxt grades --semester 2025-2026-3
 easy-qfnu jwxt schedule --semester 2025-2026-3 --week 1
 easy-qfnu jwxt exams --semester 2025-2026-3
+easy-qfnu jwxt classrooms --semester 2025-2026-3 --weekday 3 --period-start 1   # --week defaults to the current week
 easy-qfnu jwxt exams --term-category 期末
 easy-qfnu jwxt program
 easy-qfnu jwxt program --keyword "高等数学"
 easy-qfnu jwxt evaluations
 easy-qfnu jwxt evaluate --score 89                         # preview only
 easy-qfnu jwxt evaluate --score 89 --course 0 --confirm    # submit one explicitly selected course
-easy-qfnu jwxt status   # logged_in + session_expired + profile
+easy-qfnu jwxt status   # logged_in + session_expired + profile + week
 easy-qfnu jwxt logout                         # clear the session only
 easy-qfnu jwxt logout --forget-credentials   # explicitly clear session and credentials
 easy-qfnu jwxt forget-credentials            # clear saved credentials only
 ```
 
-`jwxt status` is decided by the server, not by the local session file: no session, an expired session, and a failed check all return `ok: false` with `logged_in: false` and `session_expired` (`false` / `true` / `null`). Only a live session returns `ok: true` with `logged_in: true`.
+`jwxt status` is decided by the server, not by the local session file: no session, an expired session, and a failed check all return `ok: false` with `logged_in: false` and `session_expired` (`false` / `true` / `null`). Only a live session returns `ok: true` with `logged_in: true`. A live session also reports the current teaching week as `week` (`current` plus `total` weeks in the semester) when the page provides it; when it cannot be read the field is omitted and `ok` stays `true`.
 
 Prefer `QFNU_JWXT_PASSWORD` or `--save-credentials yes` over an inline `--password`: command-line arguments stay visible to other local processes, and agents often log the full command.
 

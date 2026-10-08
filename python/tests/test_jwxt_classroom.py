@@ -80,7 +80,7 @@ from qfnu.jwxt_classroom import (
     year_round_idle_rooms,
     year_semester_list,
 )
-from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, JWXTClient, state_dir
+from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, PROFILE_URL, JWXTClient, state_dir
 from qfnu.result import failure, success
 
 # 父页学期下拉的固定样本：含别的学年、未来学年与格式不符的项。
@@ -3577,6 +3577,104 @@ class ClassroomCliQueryTest(ClassroomCliTestCase):
         self.assertIn("重新登录", body["hint"])
         # 互踢提示是完整页面，重试也一样，所以只读了一次父页。
         self.assertEqual(len(client.calls), 1)
+
+
+# 主页周次片段：结构与真实页面一致（容器里套着 span，总周数在容器内），数据全部虚构。
+WEEK_PAGE = (
+    '<div class="middletopleftdqrqbox" style="height: 12%;">'
+    '<div class=" pr5 middletopleftzc" id="li_showWeek">'
+    '<span class="main_text main_color">第3周</span>/16周'
+    "</div></div>"
+)
+# 上面这页给出的当前教学周：省略 --week 时应该用它去查课表。
+PROBED_WEEK = 3
+# 没有周次容器的页面：主页拿到了，但探测不出教学周。
+NO_WEEK_PAGE = "<html><body><div class=\"middletopleftzc\">第9周</div></body></html>"
+
+
+class ClassroomCliWeekTest(ClassroomCliTestCase):
+    """任务：classrooms 省略 --week 时自动探测当前教学周，显式给出时不再探测。"""
+
+    def test_missing_week_probes_and_queries_that_week(self):
+        """省略 --week 时先探主页，再用探到的周次查课表，zc1 与 zc2 都是它。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.use_client(
+            self.fake_client(("200", WEEK_PAGE), ("200", parent_page()), self.query_response())
+        )
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        # 探测到的是第 3 周：结果与请求体都用它，省略结束周次时结束周次等于它。
+        self.assertEqual(body["week_start"], PROBED_WEEK)
+        self.assertEqual(body["week_end"], PROBED_WEEK)
+        self.assertEqual(client.calls[0]["url"], PROFILE_URL)
+        self.assertEqual(client.calls[-1]["url"], CLASSROOM_IFR_URL)
+        form = request_form_fields(client.calls[-1])
+        self.assertEqual(form["zc1"], str(PROBED_WEEK))
+        self.assertEqual(form["zc2"], str(PROBED_WEEK))
+
+    def test_explicit_week_never_requests_the_profile_page(self):
+        """显式 --week 时用给的值，第一个请求就是教室课表父页，没有探测这一步。"""
+        self.prime_year()
+        self.prime_dictionary(orchestration_dictionary_names())
+        client = self.use_client(
+            self.fake_client(("200", parent_page()), self.query_response())
+        )
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--week", str(ORCH_WEEK),
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["week_start"], ORCH_WEEK)
+        urls = [call["url"] for call in client.calls]
+        self.assertNotIn(PROFILE_URL, urls)
+        self.assertEqual(urls[0], CLASSROOM_PAGE_URL)
+        form = request_form_fields(client.calls[-1])
+        self.assertEqual(form["zc1"], str(ORCH_WEEK))
+
+    def test_probe_failure_sends_no_classroom_request(self):
+        """探测不到周次时 ok=false、无 rooms、提示手动传 --week，且没有课表 POST。"""
+        client = self.use_client(self.fake_client(("200", NO_WEEK_PAGE)))
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("无法自动获取当前教学周", body["error"])
+        self.assertIn("--week", body["hint"])
+        self.assertNotIn("rooms", body)
+        # 只在主页探了一次：父页 GET 与课表 POST 都没有发出去。
+        self.assertEqual([call["url"] for call in client.calls], [PROFILE_URL])
+
+    def test_probe_on_login_page_reports_the_session(self):
+        """主页是登录页说明会话已过期：错误与提示都指向重新登录，且没有课表请求。"""
+        client = self.use_client(self.fake_client(("200", LOGIN_PAGE)))
+        code, body = self.run_cli(
+            "classrooms",
+            "--semester", SELECTED_SEMESTER,
+            "--weekday", str(ORCH_WEEKDAY),
+            "--period-start", "1",
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(body["ok"])
+        self.assertIn("会话已过期", body["error"])
+        self.assertIn("jwxt login", body["hint"])
+        self.assertNotIn("rooms", body)
+        self.assertEqual([call["url"] for call in client.calls], [PROFILE_URL])
+
 
 if __name__ == "__main__":
     unittest.main()
