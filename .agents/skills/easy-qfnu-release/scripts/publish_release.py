@@ -160,8 +160,7 @@ def classify_subject(subject):
 
 
 def public_subject(subject):
-    subject = subject.replace("github.com/w1ndys/easy-qfnu-cli", "源码仓库")
-    subject = subject.replace("easy-qfnu-cli", "源码仓库")
+    """整理要写进公开文案的提交主题：去掉句末的句号与顿点。"""
     return subject.rstrip("。．")
 
 
