@@ -129,13 +129,13 @@
   - [x] 11.2 编写属性测试：属性 14，失败页不产生不上课教室
     - 对登录页、非法访问、会话互踢、缺 `kbtable`、格数不是 35，断言结果为失败且没有 `rooms`。标注设计 Correctness Properties 第 14 条，需求 1.3、1.4、8.3、8.4。
 
-- [ ] 12. 接入现有 jwxt 子命令
+- [x] 12. 接入现有 jwxt 子命令
   - 修改 `python/qfnu/jwxt.py`：在 `JWXT_COMMANDS` 增加动作 `classrooms`，摘要为查询不上课教室，`kind` 为 `action`。沿用现有分发、`prepare_client` 和 `write_jwxt_result`，使失败保持 `ok: false`、`error`、`hint`。不要改 `logout`、`xk` 或其他动作的行为。对应需求 6.1、6.5，设计 Data Models「失败结果沿用现有 CLI」。
   - 在现有选项解析中增加 `--week-end`、`--weekday`、`--period-start`、`--period-end`、`--free-all-day`、`--free-morning`、`--free-afternoon`、`--free-evening`，并复用已有 `--semester`、`--week`、`--keyword`。**星期只接受单个值**，不提供 `--weekday-end`：本功能只查某一天，多天会把不同天的格混在一起。`--period-start` 只接受 `1`/`3`/`6`/`8`/`10`，`--period-end` 取 1 到 12 的任意值、可省略（省略时等于起始大节，只查该大节所在的一块）；大节范围可以跨多个大节（如 `1–7`）。四个空闲开关按任务 9 的空闲信息过滤，可同时给出并取交集（`--free-all-day` 等价于三个时段都空闲）。不暴露 `--jc1`/`--jc2`。只在 `classrooms` 动作里做任务 1 与任务 4 的校验；其他动作忽略这些新字段。对应需求 3.11、3.12、3.13、6.1 到 6.5，设计「大节对齐」「时段划分与空闲开关」。
   - 动作函数调用任务 11 的编排，传入现有 `JWXTClient`。不修改 `python/qfnu/jwxt_client.py` 的全局 `USER_AGENT`。不修改 `SKILL.md`、`README.md`，不修改 `easy-qfnu-kjs`、`easy-qfnu-hub` 或其他仓库。对应设计 Cross-repo Check。
   - 约束同任务 1。`jwxt.py` 里新增的动作函数保持短小，业务逻辑留在 `jwxt_classroom.py`。
-  - [ ] 12.1 为 classrooms 子命令编写单元测试
+  - [x] 12.1 为 classrooms 子命令编写单元测试
     - 在 `python/tests/test_jwxt_classroom.py` 用假编排函数断言 `easy-qfnu jwxt classrooms` 能读到学期、周次范围、星期几、大节范围、`blocks`、`limitation`、`block_note`、`count` 以及每间教室的 `free_all_day`、`free_morning`、`free_afternoon`、`free_evening`、`free_blocks`、`last_free_period`；`--period-start 4` 这类起点不在块首的取值被拒绝且不调用上游；`--period-end` 省略时结束大节等于 `--period-start`；不提供 `--weekday-end`，请求里 `skxq1` 与 `skxq2` 必须同值；四个空闲开关各自与组合只过滤结果，不调用第二次上游。不访问教务站，不读取真实 Cookie。对应需求 3.11、3.12、3.13、6.1、6.2、6.5。
 
-- [ ] 13. 检查点 - 确保所有测试通过
+- [x] 13. 检查点 - 确保所有测试通过
   - 确保所有测试通过,如有疑问请询问用户
