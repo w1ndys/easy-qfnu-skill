@@ -16,7 +16,7 @@ from .jwxt_auth import contains_any, strip_tags
 from .jwxt_client import JWXT_BASE, MAIN_URL, expand_path, state_dir, write_private_file
 from .jwxt_html import LOGIN_MARKERS, attr, parse_table_html
 from .jwxt_schedule import KBTABLE_RE
-from .result import failure
+from .result import failure, success
 
 # 学期格式：YYYY-YYYY-N，末位 1 秋、2 春、3 夏。
 SEMESTER_RE = re.compile(r"^(\d{4})-(\d{4})-([123])$")
@@ -766,6 +766,315 @@ def free_blocks_of_day(occupancy, weekday):
     return free
 
 
+# 反推层：把字典、本学年各学期教室名与本次课表拼成不上课结果，全部是纯函数。
+
+# 结果里的状态取值与面向用户的转述：只说明该时段不上课，不代表可以占用。
+ROOM_STATUS = "no_class"
+ROOM_STATUS_TEXT = "不上课"
+
+# 成功结果必带的两句说明，count 为 0 时也要带上。
+LIMITATION_TEXT = "这些教室只是该时段不上课，无法获知是否被借用或锁定。"
+BLOCK_NOTE_TEXT = "节次按大节判断：块内小节共用一格，任一小节有排课即视为该大节有课。"
+# 同名多条字典记录的结果带上这句警告：这类教室的 jsid 取不出唯一值。
+MERGED_ROOM_WARNING = "同名行已合并: "
+
+# 时段划分固定按整天口径，与用户选的大节范围无关。
+MORNING_BLOCKS = ("0102", "030405")
+AFTERNOON_BLOCKS = ("0607", "0809")
+EVENING_BLOCKS = ("101112",)
+
+# 空闲过滤开关名与结果字段同名，CLI 的 --free-* 开关转成这几个名字后取交集。
+FREE_SWITCHES = ("free_all_day", "free_morning", "free_afternoon", "free_evening")
+
+# 星期几的中文数字：对外展示用「星期三」这类写法，不归一成「周三」。
+WEEKDAY_NUMERALS = "一二三四五六日"
+
+# 停止反推的两种情形各自的提示：目标学期名单不完整，本学年缺完整秋春。
+SEMESTER_INCOMPLETE_HINT = "请稍后重试；该学期教室名单不完整时无法判断哪些教室不上课"
+YEAR_EVIDENCE_HINT = "本学年缺少完整的秋季或春季课表，暂时无法判断全年无课"
+
+
+def weekday_label(weekday):
+    """取星期几的中文名，形如「星期三」；星期越界时返回空串。"""
+    index = parse_bound(weekday, *WEEKDAY_RANGE)
+    # 星期越界时取不出对应的中文数字，按空名处理。
+    if index is None:
+        return ""
+    return "星期" + WEEKDAY_NUMERALS[index - 1]
+
+
+def dictionary_room_index(dictionary):
+    """把字典摊平成 单体教室 → 来源信息，返回 {教室名: jsid/source_names/merged}。
+
+    一间教室可能由多条字典记录展开而来（同名多条），此时 jsid 不再是唯一身份，置空并在结果里
+    记「同名行已合并」警告；展开失败的记录不产生单体教室，它的警告已由解析阶段记下。
+    """
+    index = {}
+    for record in dictionary.get("records") or ():
+        rooms = record.get("rooms") or ()
+        # 展开不出房号的记录不产生单体教室，它只能进警告。
+        if not rooms:
+            continue
+        jsmc = str(record.get("jsmc") or "")
+        jsid = str(record.get("jsid") or "")
+        for name in rooms:
+            entry = index.get(name)
+            # 第一次见到这间教室时按这条记录建来源信息。
+            if entry is None:
+                index[name] = {"jsid": jsid, "source_names": [jsmc], "merged": False}
+                continue
+            # 再次见到同名教室说明字典里有同名多条记录，jsid 不再是唯一身份。
+            entry["jsid"] = ""
+            entry["merged"] = True
+            # 来源展示名按出现顺序记全，同一个展示名只记一次。
+            if jsmc not in entry["source_names"]:
+                entry["source_names"].append(jsmc)
+    return index
+
+
+def semester_evidence_rooms(semester_rooms):
+    """取本学年完整学期的教室名并集，返回 (并集, 完整学期列表)。
+
+    低于完整阈值的学期名单不完整：既不证明有排课，也不证明全年无课，整份跳过不参与。
+    """
+    evidence = set()
+    complete = []
+    for semester in sorted(semester_rooms or {}):
+        rooms = semester_rooms[semester] or ()
+        # 教室名数低于阈值说明该学期名单不完整，不能当成全年排课的证据。
+        if not semester_complete(semester, len(rooms)):
+            continue
+        complete.append(semester)
+        for name in rooms:
+            evidence.add(str(name))
+    return evidence, complete
+
+
+def has_year_evidence(complete_semesters):
+    """判断完整学期里有没有秋季或春季：都没有时全年无课判断缺少可用数据。"""
+    for semester in complete_semesters or ():
+        rank = parse_semester(semester)
+        # 只有完整的秋（1）与春（2）能当全年证据，夏季开课少，单独一份不够。
+        if rank is not None and rank[1] in (1, 2):
+            return True
+    return False
+
+
+def candidate_rooms(dictionary_rooms, evidence):
+    """候选集：全集里在本学年某个完整学期数据行首格出现过的单体教室。"""
+    # 只留下字典里的教室，课表首格里出现过的其他名字不进结果。
+    return {name for name in dictionary_rooms if name in evidence}
+
+
+def year_round_idle_rooms(dictionary_rooms, candidates):
+    """全年无课集：全集里不属于候选集的单体教室，与候选集不相交。"""
+    return {name for name in dictionary_rooms if name not in candidates}
+
+
+def selected_rooms(candidates, keyword):
+    """指定教室集：关键词为空时等于候选集，非空时按规范化展示名做包含匹配。
+
+    只在候选集里筛，不创造字典里不存在的教室；没有命中时返回空集，调用方仍按成功处理。
+    """
+    text = normalize_room_name(keyword)
+    # 关键词为空时不缩小范围，指定教室集就是候选集。
+    if not text:
+        return set(candidates)
+    return {name for name in candidates if text in normalize_room_name(name)}
+
+
+def occupied_rooms(parsed, weekday, blocks):
+    """占用集：数据行首格给出的、所选大节在查询日至少有一个占用格的单体教室。
+
+    同行别的块有内容但所选大节为空时不算占用：占用判定只看所选大节在查询日的列。合称行按
+    展开后的每一间计入。
+    """
+    occupied = set()
+    for row in parsed.get("rows") or ():
+        # 所选大节在这一天没有占用格时这一行不算占用，即使别的块有内容。
+        if not any_occupied(row["occupancy"], weekday, blocks):
+            continue
+        for name in row["rooms"]:
+            occupied.add(name)
+    return occupied
+
+
+def section_free(free_blocks, section_blocks):
+    """判断某个时段是否整段空闲：时段里每一块都没课才算空闲。"""
+    for name in section_blocks:
+        # 时段里有一块有课，这个时段就不算空闲。
+        if name not in free_blocks:
+            return False
+    return True
+
+
+def last_free_period(free_blocks):
+    """取空闲大节里最后一块的末小节；没有空闲大节时为 0，全天空闲时为 12。"""
+    last = 0
+    for name, periods in PERIOD_BLOCKS:
+        # 只有空闲的块才把末小节往上抬，按表头顺序走完留下的就是最晚可用节次。
+        if name in free_blocks:
+            last = periods[-1]
+    return last
+
+
+def room_free_info(occupancy, weekday):
+    """算一间教室查询日的空闲信息：空闲大节、占用大节、三个时段与最晚可用节次。
+
+    占用位缺失（课表里没有这间教室的行）时 5 个块都空闲；空闲只表示没有排课，不表示可以
+    占用。返回的字段与结果里的教室字段同名，都按查询那一天算。
+    """
+    free = free_blocks_of_day(occupancy, weekday)
+    occupied = [name for name, _periods in PERIOD_BLOCKS if name not in free]
+    return {
+        "free_all_day": not occupied,
+        "free_morning": section_free(free, MORNING_BLOCKS),
+        "free_afternoon": section_free(free, AFTERNOON_BLOCKS),
+        "free_evening": section_free(free, EVENING_BLOCKS),
+        "free_blocks": free,
+        "occupied_blocks": occupied,
+        "last_free_period": last_free_period(free),
+    }
+
+
+def merged_warnings(*groups):
+    """把几组警告合并成一份，重复的只留一条，顺序按来源先后。"""
+    warnings = []
+    for group in groups:
+        for text in group or ():
+            # 同一句警告可能来自字典与课表两处，结果里只留一条。
+            if text not in warnings:
+                warnings.append(text)
+    return warnings
+
+
+def merged_room_warnings(names, index):
+    """取同名多条字典记录的教室的合并警告：这些教室的 jsid 取不出唯一值。"""
+    warnings = []
+    for name in sorted(names):
+        # jsid 为空说明这间教室对应多条字典记录，展示名相同但身份不唯一。
+        if index[name]["merged"]:
+            warnings.append(MERGED_ROOM_WARNING + name)
+    return warnings
+
+
+def result_room(name, entry, free_info):
+    """组装一间教室的结果：展示名、jsid、状态、空闲信息与来源展示名。"""
+    payload = {
+        "name": name,
+        "jsid": entry["jsid"],
+        "status": ROOM_STATUS,
+        "status_text": ROOM_STATUS_TEXT,
+    }
+    payload.update(free_info)
+    payload["source_names"] = list(entry["source_names"])
+    return payload
+
+
+def empty_room_results(names, index, occupancy_map, weekday):
+    """把不上课教室名拼成结果列表：按展示名排序，每间带上它的空闲信息。"""
+    rooms = []
+    for name in sorted(names):
+        # 占用位缺失（这周这天没有它的行）时按 5 个块全空闲处理。
+        info = room_free_info(occupancy_map.get(name) or {}, weekday)
+        rooms.append(result_room(name, index[name], info))
+    return rooms
+
+
+def reverse_room_sets(dictionary, semester_rooms, parsed, params):
+    """反推候选集、指定教室集、占用集与全年无课集，返回 (集合, 失败结果)。
+
+    集合含 index、blocks、candidates、year_round_idle、selected、occupied 与 occupancy_map。
+    目标学期名单不完整，或本学年既没有完整秋季也没有完整春季时返回失败结果：这两种情况下
+    缺失的行都不能被解释成不上课。
+    """
+    blocks = query_blocks(params["period_start"], params["period_end"])
+    # 大节范围取不出覆盖块时判定不出占用，属于调用顺序错误。
+    if not blocks:
+        return None, failure("jwxt", "大节范围取不出覆盖块，无法判定占用", PARAM_HINT)
+    semester = str(params["semester"])
+    index = dictionary_room_index(dictionary)
+    evidence, complete = semester_evidence_rooms(semester_rooms)
+    target_rooms = (semester_rooms or {}).get(semester) or ()
+    # 目标学期名单低于完整阈值时停止反推：缺失的行不能被解释成不上课。
+    if not semester_complete(semester, len(target_rooms)):
+        message = "目标学期教室名数低于完整阈值，已停止反推: semester=" + semester
+        return None, failure("jwxt", message, SEMESTER_INCOMPLETE_HINT)
+    # 本学年没有完整秋春时全年无课判断缺少可用数据，同样停止反推。
+    if not has_year_evidence(complete):
+        return None, failure("jwxt", "本学年没有完整的秋季或春季课表，已停止反推", YEAR_EVIDENCE_HINT)
+    dictionary_rooms = set(index)
+    candidates = candidate_rooms(dictionary_rooms, evidence)
+    return {
+        "index": index,
+        "blocks": blocks,
+        "candidates": candidates,
+        "year_round_idle": year_round_idle_rooms(dictionary_rooms, candidates),
+        "selected": selected_rooms(candidates, params["keyword"]),
+        "occupied": occupied_rooms(parsed, params["weekday"], blocks),
+        "occupancy_map": room_occupancy_map(parsed),
+    }, None
+
+
+def empty_classroom_result(dictionary, semester_rooms, parsed, params, cache=None):
+    """反推不上课教室并组装完整结果信封。
+
+    dictionary 是 parse_dictionary 的解析结果，semester_rooms 是 学期 → 该学期数据行首格
+    展开出的教室名列表，parsed 是本次课表的解析结果，params 是 validate_query 通过的参数，
+    cache 由调用方（编排）传入，默认空字典。函数不读时钟、不发请求、不读写缓存：结果集由
+    指定教室集减去占用集得到，因此这周这天整天没课、不出现在响应里的教室照样进结果。目标
+    学期不完整，或本学年没有完整秋春时返回失败结果，且不含 rooms。
+    """
+    sets, error = reverse_room_sets(dictionary, semester_rooms, parsed, params)
+    # 停止反推的两种情形由 reverse_room_sets 说明，失败结果里没有 rooms。
+    if error is not None:
+        return error
+    weekday = params["weekday"]
+    resting = sets["selected"] - sets["occupied"]
+    rooms = empty_room_results(resting, sets["index"], sets["occupancy_map"], weekday)
+    warnings = merged_warnings(
+        dictionary.get("warnings"),
+        parsed.get("warnings"),
+        merged_room_warnings(resting, sets["index"]),
+    )
+    fields = {
+        "semester": str(params["semester"]),
+        "week_start": params["week_start"],
+        "week_end": params["week_end"],
+        "weekday": weekday,
+        "weekday_name": weekday_label(weekday),
+        "period_start": params["period_start"],
+        "period_end": params["period_end"],
+        "blocks": sets["blocks"],
+        "keyword": params["keyword"],
+        "skjs": keyword_skjs(params["keyword"], dictionary.get("records") or ()),
+        "limitation": LIMITATION_TEXT,
+        "block_note": BLOCK_NOTE_TEXT,
+        "excluded_year_round_idle_count": len(sets["year_round_idle"]),
+        "count": len(rooms),
+        "rooms": rooms,
+        "cache": cache if cache is not None else {},
+        "warnings": warnings,
+    }
+    return success("jwxt", fields)
+
+
+def filter_free_rooms(rooms, switches):
+    """按已打开的空闲开关过滤结果列表。
+
+    开关名与结果字段同名，同时给多个开关时取交集（上午 + 晚上就是两者都空闲）；函数只筛结果，
+    不改写任何字段，调用方按过滤后的列表重算 count。
+    """
+    opened = [name for name in FREE_SWITCHES if name in set(switches or ())]
+    # 一个开关都没打开时结果原样返回，顺序也保持。
+    if not opened:
+        return list(rooms or ())
+    kept = []
+    for room in rooms or ():
+        # 已打开的开关里任一字段为假说明这间教室不满足条件，全部为真才留下。
+        if all(room.get(name, False) for name in opened):
+            kept.append(room)
+    return kept
 # 缓存层：只把解析成功的字典与学期教室名写盘，读不出内容时按没有缓存处理。
 
 

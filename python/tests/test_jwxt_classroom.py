@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from qfnu.jwxt_classroom import (
+    BLOCK_NOTE_TEXT,
     BLOCK_START_BOUNDS,
     CACHE_DIR_NAME,
     CACHE_ENV_VAR,
@@ -20,24 +21,34 @@ from qfnu.jwxt_classroom import (
     CLASSROOM_USER_AGENT,
     DICTIONARY_MAX_ROW,
     FETCH_ATTEMPTS,
+    FREE_SWITCHES,
     GRID_BLOCK_NAMES,
     GRID_CELL_COUNT,
+    LIMITATION_TEXT,
+    MERGED_ROOM_WARNING,
     PERIOD_BLOCKS,
+    ROOM_STATUS,
+    ROOM_STATUS_TEXT,
     any_occupied,
     block_bounds_error,
     cache_dir,
     cache_expired,
+    candidate_rooms,
     dictionary_cache_path,
     dictionary_form,
+    dictionary_room_index,
+    empty_classroom_result,
     expand_record,
     expand_room_name,
     fetch_dictionary,
     fetch_parent_page,
     fetch_query_page,
     fetch_semester_page,
+    filter_free_rooms,
     free_blocks_of_day,
     keyword_skjs,
     normalize_room_name,
+    occupied_rooms,
     parse_academic_year,
     parse_classroom_page,
     parse_classroom_table,
@@ -48,16 +59,20 @@ from qfnu.jwxt_classroom import (
     read_dictionary_cache,
     read_semester_cache,
     reset_serial_refresh,
+    room_free_info,
     room_occupancy_map,
     row_occupancy,
+    selected_rooms,
     semester_cache_path,
     semester_complete,
+    semester_evidence_rooms,
     semester_form,
     serial_lock,
     validate_query,
     write_dictionary_cache,
     write_semester_cache,
     write_semester_cache_from_page,
+    year_round_idle_rooms,
     year_semester_list,
 )
 from qfnu.jwxt_client import JWXT_BASE, MAIN_URL, state_dir
@@ -1956,6 +1971,666 @@ class ClassroomSerialRefreshTest(ClassroomRequestTestCase):
         self.assertEqual(page["selected"], SELECTED_SEMESTER)
         self.assertEqual(dictionary["records"][0]["jsid"], "JSID-A")
         self.assertEqual(len(client.calls), 2)
+
+
+# 反推用例：字典、本学年学期教室名与本次课表都是拼出来的纯数据，不发请求、不读真实缓存。
+
+
+# 反推用例里的楼栋前缀：房号决定是不是同一间教室。
+REVERSE_BUILDING = "格物楼"
+
+# 本学年秋季（目标学期）的教室名范围：起点与间数，够 200 间阈值。
+REVERSE_AUTUMN_RANGE = (101, 200)
+
+# 本学年春季的教室名范围：另外一段房号，用来覆盖「另一个完整学期有排课」。
+REVERSE_SPRING_RANGE = (301, 250)
+
+
+def reverse_room(number):
+    """拼一间教室的展示名：楼栋前缀加房号，能展开出单体教室。"""
+    return REVERSE_BUILDING + str(number)
+
+
+def semester_room_names(start, count):
+    """拼一个学期连续编号的教室名列表，用来凑够完整阈值。"""
+    return [reverse_room(number) for number in range(start, start + count)]
+
+
+def block_cell_index(weekday, block_name):
+    """算某个「星期 × 大节」在 35 格里的下标：(星期 - 1) × 5 + 块序号。"""
+    names = [name for name, _periods in PERIOD_BLOCKS]
+    return (weekday - 1) * len(PERIOD_BLOCKS) + names.index(block_name)
+
+
+class ClassroomReverseTestCase(ClassroomCacheTestCase):
+    """反推用例的共同部分：拼字典、本学年学期教室名、本次课表与查询参数。"""
+
+    # 属性测试的固定种子与轮数，让用例可复现。
+    SEED = 20261018
+    ROUNDS = 20
+
+    # 全部 5 个大节，按表头顺序。
+    ALL_BLOCKS = tuple(name for name, _periods in PERIOD_BLOCKS)
+
+    def dictionary_of_rooms(self, names):
+        """把教室名列表拼成字典：一条记录一间教室，jsid 按顺序编号。"""
+        items = [{"jsid": "JSID-" + str(index), "jsmc": name} for index, name in enumerate(names)]
+        return self.dictionary_of(items)
+
+    def params_of(self, **overrides):
+        """拼一份通过校验的查询参数；默认查第 6 周星期三的 1–2 节。"""
+        values = {
+            "semester": SELECTED_SEMESTER,
+            "week_start": 6,
+            "week_end": 6,
+            "weekday": 3,
+            "period_start": 1,
+            "period_end": 2,
+            "keyword": "",
+        }
+        values.update(overrides)
+        params, error = validate_query(
+            values["semester"],
+            values["week_start"],
+            values["week_end"],
+            values["weekday"],
+            values["period_start"],
+            values["period_end"],
+            values["keyword"],
+        )
+        self.assertIsNone(error)
+        return params
+
+    def result_names(self, dictionary, semesters, parsed, params, keyword):
+        """按给定关键词跑一次反推，返回结果里的教室名列表。"""
+        picked = dict(params)
+        picked["keyword"] = normalize_room_name(keyword)
+        result = empty_classroom_result(dictionary, semesters, parsed, picked)
+        self.assertTrue(result["ok"])
+        return [room["name"] for room in result["rooms"]]
+
+    def random_scene(self, generator):
+        """随机造一份场景：返回 (字典, 学期教室名, 本次课表, 查询参数)。
+
+        字典里有秋季名单里的教室、只出现在春季名单里的教室，以及本学年哪个完整学期都没有的
+        教室；秋季与春季都凑够阈值；本次课表随机覆盖字典教室的一部分行。
+        """
+        autumn_only = generator.sample(range(101, 125), generator.randint(0, 4))
+        spring_only = generator.sample(range(301, 325), generator.randint(1, 4))
+        idle = generator.sample(range(601, 621), generator.randint(1, 3))
+        names = [reverse_room(number) for number in sorted(autumn_only + spring_only + idle)]
+        semesters = {
+            SELECTED_SEMESTER: semester_room_names(*REVERSE_AUTUMN_RANGE),
+            "2026-2027-2": semester_room_names(*REVERSE_SPRING_RANGE),
+        }
+        rows = []
+        for name in generator.sample(names, generator.randint(1, len(names))):
+            # 每行随机放 0 到 3 个课程格，覆盖各个星期与块。
+            rows.append((name, {generator.randrange(GRID_CELL_COUNT) for _index in range(generator.randint(0, 3))}))
+        start = generator.choice(BLOCK_START_BOUNDS)
+        params = self.params_of(
+            weekday=generator.randint(1, 7),
+            period_start=start,
+            period_end=generator.randint(start, 12),
+        )
+        return self.dictionary_of_rooms(names), semesters, self.parsed_table(rows), params
+
+class ClassroomReverseUnitTest(ClassroomReverseTestCase):
+    """任务 9.1 / 需求 3.5、3.6、3.7、3.8、4.1、4.2、5.2：候选减占用、空闲信息与结果组装。"""
+
+    def test_weekday_name_uses_the_chinese_label(self):
+        """对外展示的星期名用「星期三」这类写法，不归一成「周三」。"""
+        name = reverse_room(101)
+        semesters = {SELECTED_SEMESTER: semester_room_names(*REVERSE_AUTUMN_RANGE)}
+        parsed = self.parsed_table([(name, {0})])
+        result = empty_classroom_result(self.dictionary_of_rooms([name]), semesters, parsed, self.params_of(weekday=3))
+        self.assertEqual(result["weekday_name"], "星期三")
+
+    def target_rooms(self):
+        """目标学期（秋季）的教室名列表，够完整阈值。"""
+        return semester_room_names(*REVERSE_AUTUMN_RANGE)
+
+    def test_candidates_minus_occupied(self):
+        """占用集中的教室不进结果，其余候选教室进结果。"""
+        rooms = self.target_rooms()
+        target = rooms[:3]
+        dictionary = self.dictionary_of_rooms(target)
+        # 第 1 间在查询日的大节上有课，后两间这周这天没有行。
+        parsed = self.parsed_table([(target[0], {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertTrue(result["ok"])
+        self.assertEqual([room["name"] for room in result["rooms"]], target[1:])
+        self.assertEqual(result["count"], 2)
+
+    def test_row_with_other_blocks_is_not_occupied_and_stays_in_results(self):
+        """同行别的块有内容、所选大节为空时，该教室算不上课并出现在结果里。"""
+        name = reverse_room(101)
+        rooms = self.target_rooms()
+        dictionary = self.dictionary_of_rooms([name])
+        parsed = self.parsed_table([(name, {block_cell_index(3, "0607")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [name])
+        room = result["rooms"][0]
+        self.assertEqual(room["occupied_blocks"], ["0607"])
+        self.assertFalse(room["free_all_day"])
+        # 所选大节是 0102，它在所选大节上仍然空闲。
+        self.assertIn("0102", room["free_blocks"])
+
+    def test_missing_row_is_no_class_and_free_all_day(self):
+        """目标周次与星期里没有该行时仍是「不上课」，且 5 个块全空闲。"""
+        name = reverse_room(101)
+        other = reverse_room(102)
+        rooms = self.target_rooms()
+        dictionary = self.dictionary_of_rooms([name, other])
+        # 课表里只有另一间教室的行：目标教室这周这天压根不出现。
+        parsed = self.parsed_table([(other, {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [name])
+        room = result["rooms"][0]
+        self.assertTrue(room["free_all_day"])
+        self.assertEqual(room["free_blocks"], list(self.ALL_BLOCKS))
+        self.assertEqual(room["occupied_blocks"], [])
+        self.assertEqual(room["last_free_period"], 12)
+
+    def test_year_round_idle_rooms_are_excluded(self):
+        """本学年完整学期都没出现过的教室被排除，并计入排除数量。"""
+        active = reverse_room(101)
+        idle = reverse_room(601)
+        rooms = self.target_rooms()
+        dictionary = self.dictionary_of_rooms([active, idle])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [active])
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
+
+    def test_room_scheduled_in_another_semester_is_kept(self):
+        """目标学期没有该行、但本学年另一个完整学期有排课的教室留在候选集里。"""
+        autumn_only = reverse_room(101)
+        spring_only = reverse_room(305)
+        semesters = {
+            SELECTED_SEMESTER: semester_room_names(*REVERSE_AUTUMN_RANGE),
+            "2026-2027-2": semester_room_names(*REVERSE_SPRING_RANGE),
+        }
+        dictionary = self.dictionary_of_rooms([autumn_only, spring_only])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, semesters, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [autumn_only, spring_only])
+        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+
+    def test_keyword_only_narrows_the_results(self):
+        """关键词只缩小结果，不新增候选以外的教室。"""
+        rooms = self.target_rooms()
+        dictionary = self.dictionary_of_rooms(rooms[:3])
+        semesters = {SELECTED_SEMESTER: rooms}
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        base = self.result_names(dictionary, semesters, parsed, self.params_of(), "")
+        self.assertEqual(base, rooms[:3])
+        narrowed = self.result_names(dictionary, semesters, parsed, self.params_of(), "格物楼102")
+        self.assertEqual(narrowed, [rooms[1]])
+        self.assertLessEqual(set(narrowed), set(base))
+
+    def test_keyword_without_hit_keeps_both_notes(self):
+        """关键词没有命中时仍是成功结果，count 为 0 且两句说明都在。"""
+        rooms = self.target_rooms()
+        dictionary = self.dictionary_of_rooms([rooms[0], reverse_room(601)])
+        parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(
+            dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["rooms"], [])
+        self.assertEqual(result["limitation"], LIMITATION_TEXT)
+        self.assertEqual(result["block_note"], BLOCK_NOTE_TEXT)
+        # 排除数量是关键词过滤前的全年无课教室数，不随关键词变化。
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
+
+    def test_rooms_merged_from_the_same_display_name_lose_their_jsid(self):
+        """同名多条字典记录时 jsid 留空，并在 warnings 里记「同名行已合并」。"""
+        rooms = self.target_rooms()
+        items = ({"jsid": "AAA", "jsmc": rooms[0]}, {"jsid": "BBB", "jsmc": rooms[0]})
+        dictionary = self.dictionary_of(items)
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [rooms[0]])
+        self.assertEqual(result["rooms"][0]["jsid"], "")
+        self.assertEqual(result["rooms"][0]["source_names"], [rooms[0]])
+        self.assertIn(MERGED_ROOM_WARNING + rooms[0], result["warnings"])
+
+
+    def test_unexpandable_names_only_show_up_in_warnings(self):
+        """字典与课表里无法展开的原始名称只进 warnings，不成为结果行。"""
+        rooms = self.target_rooms()
+        items = ({"jsid": "AAA", "jsmc": rooms[0]}, {"jsid": "BBB", "jsmc": "演播厅"})
+        dictionary = self.dictionary_of(items)
+        # 课表里另有一行首格也取不出房号，它同样只能进警告。
+        parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")}), ("走廊", {0})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        # 目标学期里唯一能展开的候选教室这天有课，所以结果为空。
+        self.assertEqual(result["rooms"], [])
+        self.assertIn("演播厅", " ".join(result["warnings"]))
+        self.assertIn("走廊", " ".join(result["warnings"]))
+        self.assertEqual(result["count"], 0)
+
+
+class ClassroomSemesterThresholdTest(ClassroomReverseTestCase):
+    """任务 9.2 / 需求 4.3、4.4：完整阈值决定反推与全年证据。"""
+
+    def test_incomplete_autumn_stops_reversing(self):
+        """秋季只有 199 间时停止反推，失败结果里没有 rooms。"""
+        rooms = semester_room_names(101, 199)
+        dictionary = self.dictionary_of_rooms(rooms[:3])
+        parsed = self.parsed_table([(rooms[0], {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertFalse(result["ok"])
+        self.assertIn("完整阈值", result["error"])
+        self.assertTrue(result["hint"])
+        self.assertNotIn("rooms", result)
+
+    def test_incomplete_summer_is_not_year_evidence(self):
+        """夏季只有 49 间时不参与全年证据，只出现在夏季的教室算全年无课。"""
+        summer_room = reverse_room(701)
+        autumn = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        summer = [summer_room] + semester_room_names(801, 48)
+        dictionary = self.dictionary_of_rooms([reverse_room(101), summer_room])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(
+            dictionary, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual([room["name"] for room in result["rooms"]], [reverse_room(101)])
+        self.assertEqual(result["excluded_year_round_idle_count"], 1)
+
+    def test_complete_summer_room_enters_candidates(self):
+        """夏季有 50 间且某教室出现在首格时，该教室进候选集。"""
+        summer_room = reverse_room(701)
+        autumn = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        summer = [summer_room] + semester_room_names(801, 49)
+        dictionary = self.dictionary_of_rooms([reverse_room(101), summer_room])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(
+            dictionary, {SELECTED_SEMESTER: autumn, "2026-2027-3": summer}, parsed, self.params_of()
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn(summer_room, [room["name"] for room in result["rooms"]])
+        self.assertEqual(result["excluded_year_round_idle_count"], 0)
+
+    def test_no_complete_autumn_or_spring_stops_reversing(self):
+        """本学年只有完整夏季时停止反推，说明全年无课判断缺少可用数据。"""
+        summer = semester_room_names(701, 60)
+        dictionary = self.dictionary_of_rooms(summer[:3])
+        parsed = self.parsed_table([(summer[0], {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(
+            dictionary, {"2026-2027-3": summer}, parsed, self.params_of(semester="2026-2027-3")
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("秋季", result["error"])
+        self.assertTrue(result["hint"])
+        self.assertNotIn("rooms", result)
+
+class ClassroomReverseSubsetPropertyTest(ClassroomReverseTestCase):
+    """任务 9.3 / 设计 Correctness Properties 第 1 条 / 需求 3.7、4.1：不上课集是子集。"""
+
+    def test_resting_rooms_stay_inside_selected_and_candidate_rooms(self):
+        """不上课集逐轮都落在指定教室集与候选集里。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            index = dictionary_room_index(dictionary)
+            evidence, _complete = semester_evidence_rooms(semesters)
+            candidates = candidate_rooms(set(index), evidence)
+            selected = selected_rooms(candidates, params["keyword"])
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            self.assertTrue(result["ok"])
+            names = {room["name"] for room in result["rooms"]}
+            # 不上课集既是指定教室集的子集，也是候选集的子集，还都在字典全集里。
+            self.assertLessEqual(names, selected)
+            self.assertLessEqual(names, candidates)
+            self.assertLessEqual(candidates, set(index))
+
+
+class ClassroomOccupiedExclusionPropertyTest(ClassroomReverseTestCase):
+    """任务 9.4 / 设计 Correctness Properties 第 2 条 / 需求 3.5、3.7：占用集不进不上课集。"""
+
+    def test_occupied_rooms_never_appear_in_the_resting_list(self):
+        """占用集逐轮都与不上课集不相交。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            blocks = query_blocks(params["period_start"], params["period_end"])
+            busy = occupied_rooms(parsed, params["weekday"], blocks)
+            occupancy_map = room_occupancy_map(parsed)
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            names = {room["name"] for room in result["rooms"]}
+            # 占用集与不上课集不相交。
+            self.assertEqual(busy & names, set())
+            for name in busy:
+                # 占用集里每间教室的占用大节都与所选大节有交集。
+                info = room_free_info(occupancy_map[name], params["weekday"])
+                self.assertTrue(set(info["occupied_blocks"]) & set(blocks))
+
+
+class ClassroomYearRoundIdlePropertyTest(ClassroomReverseTestCase):
+    """任务 9.5 / 设计 Correctness Properties 第 3 条 / 需求 4.1、4.2：全年无课集与候选集不相交。"""
+
+    def test_year_round_idle_rooms_never_overlap_candidates(self):
+        """全年无课集逐轮都与候选集不相交。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            index = dictionary_room_index(dictionary)
+            evidence, _complete = semester_evidence_rooms(semesters)
+            candidates = candidate_rooms(set(index), evidence)
+            idle = year_round_idle_rooms(set(index), candidates)
+            # 两个集合不相交，并且一起覆盖字典全集。
+            self.assertEqual(idle & candidates, set())
+            self.assertEqual(idle | candidates, set(index))
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            self.assertEqual(result["excluded_year_round_idle_count"], len(idle))
+
+
+class ClassroomBlockMonotonicPropertyTest(ClassroomReverseTestCase):
+    """任务 9.6 / 设计 Correctness Properties 第 5 条 / 需求 3.2、3.5：范围越宽占用集越大。"""
+
+    # 三种范围都从第 1 小节起，覆盖面逐级包含。
+    RANGES = ((1, 2), (1, 5), (1, 12))
+
+    def sets_of_range(self, dictionary, semesters, parsed, weekday, period_start, period_end):
+        """按给定大节范围反推一次，返回 (占用集, 不上课集)。"""
+        blocks = query_blocks(period_start, period_end)
+        params = self.params_of(weekday=weekday, period_start=period_start, period_end=period_end)
+        result = empty_classroom_result(dictionary, semesters, parsed, params)
+        return occupied_rooms(parsed, weekday, blocks), {room["name"] for room in result["rooms"]}
+
+    def test_wider_ranges_only_grow_occupied_and_shrink_resting(self):
+        """范围逐级变宽时占用集递增、不上课集递减。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            weekday = params["weekday"]
+            pairs = [self.sets_of_range(dictionary, semesters, parsed, weekday, *pair) for pair in self.RANGES]
+            # 逐对比较相邻的范围：后一个的覆盖面更大。
+            for index in range(len(pairs) - 1):
+                narrower = pairs[index]
+                wider = pairs[index + 1]
+                # 范围更宽时占用集只增不减，不上课集只减不增。
+                self.assertLessEqual(narrower[0], wider[0])
+                self.assertGreaterEqual(narrower[1], wider[1])
+
+    def test_a_room_busy_only_in_the_last_block_moves_between_sets(self):
+        """只在 101112 有课的教室：查 1–2 与 1–5 时不上课，查 1–12 时被占用。"""
+        name = reverse_room(101)
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        dictionary = self.dictionary_of_rooms([name])
+        semesters = {SELECTED_SEMESTER: rooms}
+        parsed = self.parsed_table([(name, {block_cell_index(3, "101112")})])
+        narrow = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 2)
+        middle = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 5)
+        wide = self.sets_of_range(dictionary, semesters, parsed, 3, 1, 12)
+        self.assertEqual(narrow, (set(), {name}))
+        self.assertEqual(middle, (set(), {name}))
+        self.assertEqual(wide, ({name}, set()))
+
+
+class ClassroomFreeBlocksPropertyTest(ClassroomReverseTestCase):
+    """任务 9.7 / 设计 Correctness Properties 第 7 条 / 需求 3.8：不上课教室在所选大节上都空闲。"""
+
+    def test_selected_blocks_are_always_free_in_the_results(self):
+        """结果里每间教室在所选大节上都空闲。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            blocks = query_blocks(params["period_start"], params["period_end"])
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            for room in result["rooms"]:
+                self.assertLessEqual(set(blocks), set(room["free_blocks"]))
+                self.assertEqual(set(room["occupied_blocks"]) & set(blocks), set())
+
+class ClassroomFreeFieldConsistencyPropertyTest(ClassroomReverseTestCase):
+    """任务 9.8 / 设计 Correctness Properties 第 8 条 / 需求 3.8：空闲字段自洽。"""
+
+    def assert_consistent(self, room):
+        """断言一间教室的空闲字段自洽：互补、全天空闲与最晚可用节次。"""
+        free = room["free_blocks"]
+        occupied = room["occupied_blocks"]
+        self.assertEqual(set(free) & set(occupied), set())
+        self.assertEqual(set(free) | set(occupied), set(self.ALL_BLOCKS))
+        self.assertEqual(room["free_all_day"], occupied == [])
+        expected = 0
+        for name in free:
+            for block_name, periods in PERIOD_BLOCKS:
+                # 空闲块里的末小节按表头顺序比较，最大的那个就是最晚可用节次。
+                if block_name == name:
+                    expected = max(expected, periods[-1])
+        self.assertEqual(room["last_free_period"], expected)
+
+    def test_free_fields_are_consistent_in_every_result(self):
+        """结果里每间教室的空闲字段逐轮自洽。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            for room in result["rooms"]:
+                self.assert_consistent(room)
+
+    def test_only_the_last_block_occupied_gives_nine(self):
+        """只有 101112 有课时最晚可用节次是 9。"""
+        name = reverse_room(101)
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        dictionary = self.dictionary_of_rooms([name])
+        parsed = self.parsed_table([(name, {block_cell_index(3, "101112")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], [name])
+        room = result["rooms"][0]
+        self.assertEqual(room["occupied_blocks"], ["101112"])
+        self.assertEqual(room["free_blocks"], ["0102", "030405", "0607", "0809"])
+        self.assertEqual(room["last_free_period"], 9)
+        self.assert_consistent(room)
+
+    def test_fully_occupied_day_gives_zero_and_no_row_gives_twelve(self):
+        """整天都有课时最晚可用节次为 0，占用位为空（没有该行）时为 12。"""
+        busy = room_free_info(expected_occupancy({0, 1, 2, 3, 4}), 1)
+        self.assertEqual(busy["free_blocks"], [])
+        self.assertEqual(busy["occupied_blocks"], list(self.ALL_BLOCKS))
+        self.assertEqual(busy["last_free_period"], 0)
+        self.assertFalse(busy["free_all_day"])
+        empty = room_free_info({}, 1)
+        self.assertEqual(empty["free_blocks"], list(self.ALL_BLOCKS))
+        self.assertEqual(empty["last_free_period"], 12)
+        self.assertTrue(empty["free_all_day"])
+
+
+class ClassroomMissingRowPropertyTest(ClassroomReverseTestCase):
+    """任务 9.9 / 设计 Correctness Properties 第 9 条 / 需求 3.7、3.8：整天没课的教室仍在结果里。"""
+
+    def test_rooms_missing_from_the_response_still_appear(self):
+        """构造一份少了几间教室的响应，缺的教室照样进结果。"""
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        target = rooms[:4]
+        dictionary = self.dictionary_of_rooms(target)
+        # 响应里只有第 1 间有课，后三间这周这天整行都不在。
+        parsed = self.parsed_table([(target[0], {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        self.assertEqual([room["name"] for room in result["rooms"]], target[1:])
+        for room in result["rooms"]:
+            self.assertTrue(room["free_all_day"])
+            self.assertEqual(room["occupied_blocks"], [])
+            self.assertEqual(room["last_free_period"], 12)
+
+    def test_results_are_the_difference_of_selected_and_occupied(self):
+        """结果集等于指定教室集减去占用集，与响应里出现了哪些行无关。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            blocks = query_blocks(params["period_start"], params["period_end"])
+            index = dictionary_room_index(dictionary)
+            evidence, _complete = semester_evidence_rooms(semesters)
+            candidates = candidate_rooms(set(index), evidence)
+            busy = occupied_rooms(parsed, params["weekday"], blocks)
+            expected = selected_rooms(candidates, params["keyword"]) - busy
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            self.assertEqual({room["name"] for room in result["rooms"]}, expected)
+
+
+class ClassroomKeywordPropertyTest(ClassroomReverseTestCase):
+    """任务 9.10 / 设计 Correctness Properties 第 12 条 / 需求 3.4：关键词过滤不创造字典外教室。"""
+
+    # 覆盖空关键词、楼名、部分房号、完整教室名与字典里没有的词。
+    KEYWORDS = ("", "格物楼", "格物楼10", "格物楼101", "体育场")
+
+    def test_keyword_only_narrows_and_never_creates_rooms(self):
+        """关键词只缩小结果，且不会造出字典外的教室。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            known = set(dictionary_room_index(dictionary))
+            base = set(self.result_names(dictionary, semesters, parsed, params, ""))
+            for keyword in self.KEYWORDS:
+                names = self.result_names(dictionary, semesters, parsed, params, keyword)
+                # 结果只会比不带关键词时更少，且每间教室都在字典全集里，按展示名排序。
+                self.assertLessEqual(set(names), base)
+                self.assertLessEqual(set(names), known)
+                self.assertEqual(names, sorted(names))
+
+
+class ClassroomStatusNotePropertyTest(ClassroomReverseTestCase):
+    """任务 9.11 / 设计 Correctness Properties 第 15 条 / 需求 5.1、5.2、5.5：状态与说明恒定。"""
+
+    def test_every_success_carries_the_same_status_and_notes(self):
+        """每次成功结果的字段都满足同一套状态与说明口径。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            self.assertEqual(result["limitation"], LIMITATION_TEXT)
+            self.assertEqual(result["block_note"], BLOCK_NOTE_TEXT)
+            self.assertEqual(result["count"], len(result["rooms"]))
+            for room in result["rooms"]:
+                self.assertEqual(room["status"], ROOM_STATUS)
+                self.assertEqual(room["status_text"], ROOM_STATUS_TEXT)
+            # 「空闲」只能描述没有排课，结果里绝不能出现「可借用」。
+            self.assertNotIn("可借用", json.dumps(result, ensure_ascii=False))
+
+    def test_empty_result_still_carries_both_notes(self):
+        """查询成功但没有教室落入结果时，两句说明仍在。"""
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        dictionary = self.dictionary_of_rooms(rooms[:2])
+        parsed = self.parsed_table([(reverse_room(999), {block_cell_index(3, "0102")})])
+        result = empty_classroom_result(
+            dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of(keyword="体育场")
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["limitation"], LIMITATION_TEXT)
+        self.assertEqual(result["block_note"], BLOCK_NOTE_TEXT)
+
+
+class ClassroomFreeSwitchPropertyTest(ClassroomReverseTestCase):
+    """任务 9.12 / 设计 Correctness Properties 第 16 条 / 需求 3.11、3.12：空闲开关只过滤不改写。"""
+
+    # 单个开关与组合开关：组合取交集（上午 + 晚上就是两者都空闲）。
+    SWITCH_GROUPS = (
+        ("free_all_day",),
+        ("free_morning",),
+        ("free_afternoon",),
+        ("free_evening",),
+        ("free_morning", "free_evening"),
+        ("free_morning", "free_afternoon", "free_evening"),
+    )
+
+    def test_switches_only_filter_the_result_set(self):
+        """按已打开的开关筛结果，不改写任何字段。"""
+        # 四个空闲开关的名字与结果字段同名，任务 12 的 CLI 开关就用这几个名字。
+        self.assertEqual(set(FREE_SWITCHES), {"free_all_day", "free_morning", "free_afternoon", "free_evening"})
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            before = empty_classroom_result(dictionary, semesters, parsed, params)["rooms"]
+            snapshot = json.loads(json.dumps(before, ensure_ascii=False))
+            # 一个开关都没打开时结果原样返回。
+            self.assertEqual(filter_free_rooms(before, ()), before)
+            for switches in self.SWITCH_GROUPS:
+                filtered = filter_free_rooms(before, switches)
+                kept = [room for room in before if all(room[switch] for switch in switches)]
+                # 只按已打开的开关筛结果，同时给多个开关即取交集。
+                self.assertEqual(filtered, kept)
+                for room in filtered:
+                    for switch in switches:
+                        self.assertTrue(room[switch])
+                # 过滤不改写任何字段：整份数据与过滤前逐字一致。
+                self.assertEqual(json.loads(json.dumps(before, ensure_ascii=False)), snapshot)
+
+
+class ClassroomSectionFieldPropertyTest(ClassroomReverseTestCase):
+    """任务 9.13 / 设计 Correctness Properties 第 17 条 / 需求 3.12、6.5：时段字段与空闲大节自洽。"""
+
+    def test_section_fields_follow_the_free_blocks(self):
+        """每个结果教室的时段字段都与它的空闲大节一致。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            dictionary, semesters, parsed, params = self.random_scene(generator)
+            result = empty_classroom_result(dictionary, semesters, parsed, params)
+            for room in result["rooms"]:
+                free = set(room["free_blocks"])
+                # 上午是两个块都空闲，下午是两个块都空闲，晚上只看 101112。
+                self.assertEqual(room["free_morning"], {"0102", "030405"} <= free)
+                self.assertEqual(room["free_afternoon"], {"0607", "0809"} <= free)
+                self.assertEqual(room["free_evening"], "101112" in free)
+                all_day = room["free_morning"] and room["free_afternoon"] and room["free_evening"]
+                self.assertEqual(room["free_all_day"], all_day)
+
+    def test_afternoon_class_keeps_morning_and_evening_free(self):
+        """只有 0607 有课时上午与晚上空闲、下午不空闲。"""
+        name = reverse_room(101)
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        dictionary = self.dictionary_of_rooms([name])
+        parsed = self.parsed_table([(name, {block_cell_index(3, "0607")})])
+        result = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, self.params_of())
+        room = result["rooms"][0]
+        self.assertEqual(room["occupied_blocks"], ["0607"])
+        self.assertTrue(room["free_morning"])
+        self.assertTrue(room["free_evening"])
+        self.assertFalse(room["free_afternoon"])
+        self.assertFalse(room["free_all_day"])
+        self.assertEqual(room["last_free_period"], 12)
+
+
+class ClassroomSingleDayPropertyTest(ClassroomReverseTestCase):
+    """任务 9.14 / 设计 Correctness Properties 第 18 条 / 需求 3.13：空闲信息为单天口径。"""
+
+    def test_both_request_weekday_fields_are_the_same_day(self):
+        """请求里 skxq1 与 skxq2 恒为同一个星期几值。"""
+        generator = random.Random(self.SEED)
+        for _round in range(self.ROUNDS):
+            weekday = generator.randint(1, 7)
+            week_start = generator.randint(1, 30)
+            form = query_form(SELECTED_SEMESTER, PARENT_MODE_ID, week_start, week_start, weekday)
+            self.assertEqual(form["skxq1"], str(weekday))
+            self.assertEqual(form["skxq2"], form["skxq1"])
+
+    def test_occupied_blocks_only_reflect_the_queried_weekday(self):
+        """查星期三时只算星期三的格：别的天有课不算占用，别的天为空也不改变判定。"""
+        name = reverse_room(101)
+        rooms = semester_room_names(*REVERSE_AUTUMN_RANGE)
+        dictionary = self.dictionary_of_rooms([name])
+        monday_full = {block_cell_index(1, block_name) for block_name, _periods in PERIOD_BLOCKS}
+        # 星期一整天有课、星期三没有课：查星期三时这间教室仍然是「不上课」。
+        parsed = self.parsed_table([(name, monday_full)])
+        params = self.params_of(period_start=1, period_end=12)
+        room = empty_classroom_result(dictionary, {SELECTED_SEMESTER: rooms}, parsed, params)["rooms"][0]
+        self.assertEqual(room["occupied_blocks"], [])
+        self.assertTrue(room["free_all_day"])
+        self.assertEqual(room["last_free_period"], 12)
+        # 同样的占用位落在星期一就是全天有课，说明两天的格没有被混在一起。
+        monday = room_free_info(room_occupancy_map(parsed)[name], 1)
+        self.assertEqual(monday["occupied_blocks"], list(self.ALL_BLOCKS))
+        # 星期三 101112 有课时只把 101112 算成占用，别的天有没有课都不改这个结论。
+        parsed = self.parsed_table([(name, monday_full | {block_cell_index(3, "101112")})])
+        wednesday = room_free_info(room_occupancy_map(parsed)[name], 3)
+        self.assertEqual(wednesday["occupied_blocks"], ["101112"])
+        self.assertEqual(wednesday["last_free_period"], 9)
+        self.assertTrue(wednesday["free_morning"])
+        self.assertFalse(wednesday["free_evening"])
 
 
 if __name__ == "__main__":
