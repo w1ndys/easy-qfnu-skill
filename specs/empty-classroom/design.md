@@ -415,7 +415,7 @@ xnxqh=<学期>&kbjcmsid=<父页当前值>&skyx=&xqid=&jzwid=&skjsid=
 | `easy-qfnu-recommendation` | 不改。 |
 | `easy-qfnu-ranking` | 不改。 |
 | `easy-qfnu-freshman-exam` | 不改。 |
-| `easy-qfnu-guide` | 不改。 |
+| `easy-qfnu-wiki` | 不改。 |
 
 已归档的 `easy-qfnu-course-recommendations` 不改。
 
