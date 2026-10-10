@@ -9,7 +9,7 @@
 - 独立排名快照仓库：`easy-qfnu-ranking`
 - 独立新生题库仓库：`easy-qfnu-freshman-exam`
 - 独立空教室仓库：`easy-qfnu-kjs`
-- 校园指南仓库：`easy-qfnu-guide`
+- 校园知识仓库：`easy-qfnu-wiki`
 
 各仓库分别开发、分别提交；CLI、固定域名 relay 与匿名统计客户端都在本仓库维护。
 
@@ -60,9 +60,10 @@
 - 作为独立 Vercel 项目提供空教室公开查询（采集快照 + Serverless API + 网页）；
 - 教师账号只在本机采集器使用，不进入 Skill / CLI / Hub。
 
-### easy-qfnu-guide
+### easy-qfnu-wiki
 
-- 维护校园生活 / 学习指南内容；
+- 维护持续更新的校园知识（生活 / 学习）；正文在本仓库 Markdown，不使用 GitHub Wiki；
+- 公开阅读页由同一批 Markdown 用 VitePress 构建到 GitHub Pages；skill 不抓这个网页，要查仍读仓库文件；
 - 不承载教务登录或查询中转。
 
 ## 跨仓库影响检查
@@ -76,7 +77,7 @@
 
 1. 在 `easy-qfnu-skill` 的需求或 issue 中确定用户可见的产品行为；
 2. 在同一仓库中拆分工程任务，冻结客户端接口、统计事件和兼容要求；
-3. 在对应的独立服务仓库实现只读接口 / 网页 / 快照（precourse、recommendation、ranking、freshman-exam、kjs、guide）；
+3. 在对应的独立服务仓库实现只读接口 / 网页 / 快照（precourse、recommendation、ranking、freshman-exam、kjs、wiki）；
 4. 在 `easy-qfnu-hub` 中实现匿名使用统计契约（以及推荐提交中继，如涉及）；
 5. 在 `easy-qfnu-skill` 中接入并完成客户端验证；
 6. 在 `easy-qfnu-skill` 中只同步经过脱敏的公开使用说明。
